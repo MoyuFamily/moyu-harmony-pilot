@@ -19,6 +19,7 @@
 ## Documentation
 
 - **[Requirements & Architecture Specification](docs/requirements.md)** — Scope, non-goals, responsibility boundaries, layered package design, plugin model, security invariants, and roadmap.
+- **[Local Environment & Device Setup Guide](docs/device-setup.md)** — Official `hdc` installation (macOS ARM64 / Linux), Python 3.11 environment setup, HarmonyOS NEXT device prerequisites, read-only verification commands, and USB troubleshooting.
 - **[Pull Bridge Protocol Specification (v1 Draft)](docs/bridge-protocol.md)** — Server-agnostic HTTPS pull protocol (`heartbeat` / `claim` / `lease` / `complete`) for integrating any external scheduler or control plane.
 - **[Security Policy](SECURITY.md)** — Secret handling, local-only diagnostics, and fail-closed execution rules.
 
