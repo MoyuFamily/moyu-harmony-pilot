@@ -1,0 +1,11 @@
+# Copy this file to `devices.local.yaml` (ignored by Git) and tighten permissions:
+#   cp devices.example.yaml devices.local.yaml
+#   chmod 600 devices.local.yaml
+#
+# Never commit real HarmonyOS device serial numbers to version control.
+
+devices:
+  harmony-01:
+    serial: "REPLACE_WITH_HDC_TARGET_SERIAL"
+    max_temperature_c: 42.0
+    notes: "Primary USB-connected HarmonyOS NEXT device"

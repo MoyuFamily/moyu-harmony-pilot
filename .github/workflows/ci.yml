@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Byte-compile check
+        run: python -m compileall -q src tests
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Run offline unit test suite
+        run: pytest -v
+
+      - name: Verify CLI schema works completely offline
+        run: |
+          harmony-pilot --version
+          harmony-pilot schema --json > /dev/null
