@@ -49,6 +49,7 @@ See [docs/device-setup.md](docs/device-setup.md) for installing official `hdc 3.
 
 - **[Requirements & Architecture Specification](docs/requirements.md)** — Scope, non-goals, responsibility boundaries, layered package design, plugin model, Agent-friendly contracts, security invariants, and roadmap.
 - **[Local Environment & Device Setup Guide](docs/device-setup.md)** — Official `hdc` installation (macOS ARM64 / Linux), Python 3.11 environment setup, HarmonyOS NEXT device prerequisites, read-only verification commands, and USB troubleshooting.
+- **[Action Plugins & Local Execution](docs/actions.md)** — Plugin discovery, parameter and receipt schemas, execution budgets, SQLite deduplication, and an external read-only example.
 - **[Pull Bridge Protocol Specification (v1 Draft)](docs/bridge-protocol.md)** — Server-agnostic HTTPS pull protocol (`heartbeat` / `claim` / `lease` / `complete`) for integrating any external scheduler or control plane.
 - **[AI Agent Guide](AGENTS.md)** — Architecture DAG, verification commands, testing boundaries, and security guardrails for AI coding agents working in this repository.
 - **[Security Policy](SECURITY.md)** — Secret handling, local-only diagnostics, and fail-closed execution rules.
@@ -59,7 +60,7 @@ See [docs/device-setup.md](docs/device-setup.md) for installing official `hdc 3.
 
 - **`M0`** ✅ — Repository initialized and specification documents landed.
 - **`M1`** ✅ — Core zero-dependency driver (`hdc`, `ui` with `@eN` compact semantic snapshots & `layout_hash`, `device` with alias isolation, exclusive locks, `BatteryService`/`PowerManagerService` telemetry & thermal guardrails), Agent-ready CLI (`devices`, `doctor`, `dump-ui`, `screenshot`, `schema`), and full offline CI test suite.
-- **`M2`** ⏳ — `ActionPlugin` framework, `IdempotentAction` + SQLite ledger, `plugins list/describe`, and optional `vision` OCR / `--som` overlay.
+- **`M2`** ⏳ — Plugin execution is implemented with `ActionPlugin`, `IdempotentAction`, SQLite deduplication, entry-point/directory discovery, `plugins list/describe`, `run`, built-in diagnostics and an external read-only example. Remaining work includes OCR adapters, popup watcher, `--som` and integrated interaction-difference feedback.
 - **`M3`** ⏳ — Outbound Pull Bridge worker (`serve`), protocol conformance suite, optional `[mcp]` thin adapter, and `skills/harmony-pilot/SKILL.md`.
 
 ---

@@ -5,21 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from moyu_harmony_pilot import __version__
+from moyu_harmony_pilot.actions import ActionStatus
+from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES, SCHEMA_KEYWORDS
 from moyu_harmony_pilot.cli.codes import EXIT_CODE_DESCRIPTIONS
 from moyu_harmony_pilot.cli.envelope import SCHEMA_VERSION
 from moyu_harmony_pilot.device import ScreenState
 from moyu_harmony_pilot.hdc import ConnectionState
 
-ACTION_STATUS_ENUM: tuple[str, ...] = (
-    "succeeded",
-    "already_done",
-    "human_required",
-    "device_offline",
-    "device_overheated",
-    "failed",
-    "unknown",
-    "configuration_error",
-)
+ACTION_STATUS_ENUM: tuple[str, ...] = tuple(status.value for status in ActionStatus)
 
 SENSITIVE_SIGNAL_ENUM: tuple[str, ...] = (
     "password_field",
@@ -35,6 +28,22 @@ def build_cli_schema() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "pilot_version": __version__,
         "program": "harmony-pilot",
+        "action_contract": {
+            "schema_keywords": sorted(SCHEMA_KEYWORDS),
+            "max_json_bytes": MAX_JSON_BYTES,
+            "max_nesting": 8,
+            "max_metrics": 32,
+            "max_metric_key_length": 64,
+            "max_metric_string_length": 128,
+            "max_summary_length": 256,
+            "error_code_pattern": "[a-z][a-z0-9_]{0,63}",
+            "objects_require_additionalProperties_false": True,
+            "mutating_requires_idempotency_key": True,
+            "unknown_replay_allowed": False,
+            "plugin_paths_environment": "HARMONY_PILOT_PLUGIN_PATHS",
+            "local_plugin_manifest": "actions.json",
+            "execution_thread": "main",
+        },
         "envelope_schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
@@ -94,6 +103,41 @@ def build_cli_schema() -> dict[str, Any]:
             },
         },
         "commands": {
+            "plugins": {
+                "side_effect": "readonly",
+                "description": "Discover trusted installed and explicitly configured plugins.",
+                "options": {},
+                "subcommands": {
+                    "list": {"options": {}},
+                    "describe": {"arguments": {"action_id": {
+                        "type": "string", "required": True,
+                    }}},
+                },
+                "examples": ["harmony-pilot plugins list --json",
+                             "harmony-pilot plugins describe device.health --json"],
+            },
+            "run": {
+                "side_effect": "action_defined",
+                "description": (
+                    "Execute a validated action with device locking and durable deduplication."
+                ),
+                "options": {
+                    "--device": {"type": "string"},
+                    "--action": {"type": "string", "required": True},
+                    "--params-json": {"type": "string", "default": "{}"},
+                    "--idempotency-key": {"type": "string", "maxLength": 256},
+                    "--timeout": {"type": "number", "exclusiveMinimum": 0,
+                                  "description": "Total deadline capped by the plugin default."},
+                    "--max-steps": {"type": "integer", "minimum": 1, "maximum": 10000,
+                                    "default": 100,
+                                    "description": "Maximum stage and plugin checkpoints."},
+                    "--dry-run": {"type": "boolean", "default": False,
+                                  "description": (
+                                      "Validate selection and parameters using device enumeration."
+                                  )},
+                },
+                "examples": ["harmony-pilot run --device harmony-01 --action device.health --json"],
+            },
             "devices": {
                 "side_effect": "readonly",
                 "description": (

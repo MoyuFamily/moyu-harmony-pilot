@@ -212,6 +212,11 @@ class SubprocessHdcTransport:
                 f"hdc command timed out after {effective_timeout:.1f}s.",
                 result=timeout_result,
             ) from exc
+        except BaseException:
+            # An enclosing action deadline or SIGINT must also reap the active hdc process.
+            _terminate_process_tree(proc)
+            proc.communicate()
+            raise
 
         duration_ms = int((time.monotonic() - started) * 1000)
         returncode = proc.returncode if proc.returncode is not None else 1

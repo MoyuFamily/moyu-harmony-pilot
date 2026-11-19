@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
-from tests.fakes import FakeDeviceState, FakeHdcTransport
 
 from moyu_harmony_pilot.hdc import (
     HDC_PATH_ENV,
@@ -32,6 +33,7 @@ from moyu_harmony_pilot.hdc import (
     parse_targets_output,
     validate_remote_tmp_path,
 )
+from tests.fakes import FakeDeviceState, FakeHdcTransport
 
 
 def _make_executable_script(path: Path, body: str) -> Path:
@@ -39,6 +41,21 @@ def _make_executable_script(path: Path, body: str) -> Path:
     path.write_text(f"#!{sys.executable}\n{body}\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
+
+
+def test_external_interruption_reaps_hdc_process(tmp_path: Path, monkeypatch) -> None:
+    script = _make_executable_script(tmp_path / "fake_hdc", "print('fake')")
+    transport = SubprocessHdcTransport(hdc_path=script)
+    process = Mock(pid=123456)
+    process.communicate.side_effect = [KeyboardInterrupt(), ("", "")]
+    popen = Mock(return_value=process)
+    killpg = Mock()
+    monkeypatch.setattr("moyu_harmony_pilot.hdc.transport.subprocess.Popen", popen)
+    monkeypatch.setattr("moyu_harmony_pilot.hdc.transport.os.killpg", killpg)
+    with pytest.raises(KeyboardInterrupt):
+        transport.execute(["-v"])
+    killpg.assert_called_once_with(process.pid, signal.SIGKILL)
+    assert process.communicate.call_count == 2
 
 
 def test_mask_serial_redacts_hardware_identifiers() -> None:

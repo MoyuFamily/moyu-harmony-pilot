@@ -1,17 +1,21 @@
-"""Agent-ready CLI entrypoint for `harmony-pilot` (M1)."""
+"""Agent-ready CLI entrypoint for `harmony-pilot`."""
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
 from moyu_harmony_pilot import __version__
+from moyu_harmony_pilot.actions import ActionRegistry, ActionRunner
+from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES
 from moyu_harmony_pilot.cli.codes import ExitCode, classify_exception
 from moyu_harmony_pilot.cli.envelope import CliEnvelope, error_envelope, ok_envelope
 from moyu_harmony_pilot.cli.schema import build_cli_schema
@@ -300,6 +304,28 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared],
         help="Emit self-describing JSON Schema for commands, envelopes, and exit codes.",
     )
+    p_plugins = subparsers.add_parser(
+        "plugins", parents=[shared], help="Discover and describe trusted local action plugins.",
+    )
+    plugin_commands = p_plugins.add_subparsers(dest="plugin_command", required=True)
+    plugin_commands.add_parser("list", parents=[shared], help="List discovered plugins.")
+    p_describe = plugin_commands.add_parser(
+        "describe", parents=[shared], help="Describe an action schema and safety metadata.",
+    )
+    p_describe.add_argument("action_id")
+
+    p_run = subparsers.add_parser(
+        "run", parents=[shared], help="Execute a local action under device and ledger guards.",
+    )
+    p_run.add_argument("--device", default=None, metavar="ALIAS")
+    p_run.add_argument("--action", required=True, metavar="ID")
+    p_run.add_argument("--params-json", default="{}", metavar="JSON")
+    p_run.add_argument("--idempotency-key", default=None, metavar="KEY")
+    p_run.add_argument(
+        "--timeout", type=float, default=None, help="Total action deadline in seconds.",
+    )
+    p_run.add_argument("--max-steps", type=int, default=100)
+    p_run.add_argument("--dry-run", action="store_true", default=False)
 
     return parser
 
@@ -309,7 +335,7 @@ def _detect_json_flag(argv: Sequence[str]) -> bool:
 
 
 def _detect_command_name(argv: Sequence[str]) -> str:
-    known = {"devices", "doctor", "dump-ui", "screenshot", "schema"}
+    known = {"devices", "doctor", "dump-ui", "screenshot", "schema", "plugins", "run"}
     for token in argv:
         if token in known:
             return token
@@ -738,6 +764,64 @@ def _cmd_schema() -> tuple[ExitCode, dict[str, Any], str]:
     return ExitCode.OK, schema, json.dumps(schema, ensure_ascii=False, indent=2)
 
 
+def _cmd_plugins(
+    args: argparse.Namespace, *, env: Mapping[str, str] | None,
+) -> tuple[ExitCode, dict[str, Any], str]:
+    registry = ActionRegistry.discover(env=env)
+    if args.plugin_command == "describe":
+        data = registry.describe(args.action_id)
+    else:
+        data = {"plugins": registry.list()}
+    return ExitCode.OK, data, json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON key.")
+        result[key] = value
+    return result
+
+
+def _cmd_run(
+    args: argparse.Namespace, *, transport: HdcTransport | None, cwd: Path | None,
+    env: Mapping[str, str] | None,
+) -> tuple[ExitCode, dict[str, Any], str]:
+    try:
+        if len(args.params_json.encode("utf-8")) > MAX_JSON_BYTES:
+            raise ValueError("JSON size limit.")
+        params = json.loads(args.params_json, object_pairs_hook=_unique_json_object)
+    except (ValueError, RecursionError) as exc:
+        raise DeviceConfigurationError(
+            "--params-json requires a bounded valid JSON object."
+        ) from exc
+    registry = ActionRegistry.discover(env=env)
+    runner = ActionRunner(registry, state_dir=args.state_dir)
+    runner.prepare(
+        args.action, params, idempotency_key=args.idempotency_key,
+        timeout=args.timeout, max_steps=args.max_steps,
+    )
+    devices = DeviceRegistry.load_default(args.config, cwd=cwd, env=env)
+    hdc = _make_hdc_client(args=args, transport=transport, env=env)
+    targets = hdc.list_targets()
+    profile, _target = devices.resolve(args.device, targets, require_online=True)
+    device = HarmonyDevice(hdc, profile, state_dir=args.state_dir)
+    outcome = runner.run(
+        device, args.action, params, idempotency_key=args.idempotency_key,
+        timeout=args.timeout, max_steps=args.max_steps, dry_run=args.dry_run,
+    )
+    exit_code = {
+        "succeeded": ExitCode.OK, "already_done": ExitCode.OK,
+        "configuration_error": ExitCode.CONFIG_ERROR, "device_offline": ExitCode.DEVICE_OFFLINE,
+        "human_required": ExitCode.HUMAN_REQUIRED, "device_overheated": ExitCode.DEVICE_OVERHEATED,
+        "failed": ExitCode.FAILED, "unknown": ExitCode.FAILED,
+    }[outcome.status]
+    data = {"alias": device.alias, "action": args.action, "dry_run": args.dry_run,
+            **outcome.to_dict()}
+    return exit_code, data, json.dumps(data, ensure_ascii=False, indent=2)
+
+
 def _emit_envelope(envelope: CliEnvelope, out: TextIO) -> None:
     out.write(envelope.to_json() + "\n")
 
@@ -759,11 +843,17 @@ def main(
     json_requested = _detect_json_flag(raw_argv)
     guessed_cmd = _detect_command_name(raw_argv)
     parser = build_parser()
+    parser_output = io.StringIO() if json_requested else out
 
     try:
-        args = parser.parse_args(raw_argv)
+        with redirect_stdout(parser_output):
+            args = parser.parse_args(raw_argv)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 0
+        if json_requested and code == 0:
+            _emit_envelope(
+                ok_envelope(guessed_cmd, {"text": parser_output.getvalue().strip()}), out,
+            )
         return code
     except _CliArgumentError as exc:
         if json_requested:
@@ -791,7 +881,7 @@ def main(
                     "harmony-pilot",
                     {
                         "version": __version__,
-                        "commands": ["devices", "doctor", "dump-ui", "screenshot", "schema"],
+                        "commands": list(build_cli_schema()["commands"]),
                         "hint": "Run `harmony-pilot schema --json` for full CLI contract.",
                     },
                 ),
@@ -812,6 +902,12 @@ def main(
             exit_code, data, human = _cmd_screenshot(args, transport=transport, cwd=cwd, env=env)
         elif command == "schema":
             exit_code, data, human = _cmd_schema()
+        elif command == "plugins":
+            with redirect_stdout(err), redirect_stderr(err):
+                exit_code, data, human = _cmd_plugins(args, env=env)
+        elif command == "run":
+            with redirect_stdout(err), redirect_stderr(err):
+                exit_code, data, human = _cmd_run(args, transport=transport, cwd=cwd, env=env)
         else:
             raise DeviceConfigurationError(f"Unsupported command: {command!r}")
 
@@ -822,9 +918,20 @@ def main(
                 _emit_envelope(
                     error_envelope(
                         command,
-                        code="check_failed",
-                        message=f"Command `{command}` reported failing checks.",
+                        code=(data.get("error_code") or data["status"])
+                        if command == "run" else "check_failed",
+                        message=data["summary"] if command == "run"
+                        else f"Command `{command}` reported failing checks.",
                         retryable=False,
+                        hint={
+                            "human_required": (
+                                "Complete verification or sensitive confirmation manually."
+                            ),
+                            "unknown": (
+                                "Reconcile the previous submission read-only before further action."
+                            ),
+                            "device_overheated": "Allow the device to cool before retrying.",
+                        }.get(data.get("status")),
                         data=data,
                     ),
                     out,
