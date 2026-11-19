@@ -60,7 +60,7 @@ See [docs/device-setup.md](docs/device-setup.md) for installing official `hdc 3.
 
 - **`M0`** ✅ — Repository initialized and specification documents landed.
 - **`M1`** ✅ — Core zero-dependency driver (`hdc`, `ui` with `@eN` compact semantic snapshots & `layout_hash`, `device` with alias isolation, exclusive locks, `BatteryService`/`PowerManagerService` telemetry & thermal guardrails), Agent-ready CLI (`devices`, `doctor`, `dump-ui`, `screenshot`, `schema`), and full offline CI test suite.
-- **`M2`** ⏳ — Plugin execution is implemented with `ActionPlugin`, `IdempotentAction`, SQLite deduplication, entry-point/directory discovery, `plugins list/describe`, `run`, built-in diagnostics and an external read-only example. Remaining work includes OCR adapters, popup watcher, `--som` and integrated interaction-difference feedback.
+- **`M2`** ✅ — Plugin execution, SQLite deduplication, external discovery, CLI introspection, optional macOS Vision / RapidOCR adapters, `--som` screenshot annotation, explicit popup rules and budgeted local interaction with fresh-reference checks and difference feedback. Offline tests cover the adapters and guardrails.
 - **`M3`** ⏳ — Outbound Pull Bridge worker (`serve`), protocol conformance suite, optional `[mcp]` thin adapter, and `skills/harmony-pilot/SKILL.md`.
 
 ---

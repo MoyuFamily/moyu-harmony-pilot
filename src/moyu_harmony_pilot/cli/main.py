@@ -15,6 +15,7 @@ from typing import Any, NoReturn, TextIO
 
 from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ActionRegistry, ActionRunner
+from moyu_harmony_pilot.actions.observation import capture_screenshot
 from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES
 from moyu_harmony_pilot.cli.codes import ExitCode, classify_exception
 from moyu_harmony_pilot.cli.envelope import CliEnvelope, error_envelope, ok_envelope
@@ -39,6 +40,7 @@ from moyu_harmony_pilot.hdc import (
     discover_hdc,
 )
 from moyu_harmony_pilot.ui import build_compact_snapshot, parse_layout_json
+from moyu_harmony_pilot.vision import require_pillow
 
 
 class _CliArgumentError(Exception):
@@ -283,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--som",
         action="store_true",
         default=False,
-        help="Set-of-Mark `@eN` overlay annotation (scheduled for M2 vision optional extra).",
+        help="Annotate screenshot references using the optional vision extra.",
     )
     p_shot.add_argument(
         "--wait-lock",
@@ -724,13 +726,7 @@ def _cmd_screenshot(
     env: Mapping[str, str] | None,
 ) -> tuple[ExitCode, dict[str, Any], str]:
     if args.som:
-        raise DeviceConfigurationError(
-            "Set-of-Mark (`--som`) overlay rendering is not yet available in M1.",
-            hint=(
-                "`--som` is scheduled for M2 (optional vision extra). "
-                "Combine `screenshot` with `dump-ui --compact` for `@eN` coordinates."
-            ),
-        )
+        require_pillow()
 
     registry = DeviceRegistry.load_default(args.config, cwd=cwd, env=env)
     hdc = _make_hdc_client(args=args, transport=transport, env=env)
@@ -738,14 +734,11 @@ def _cmd_screenshot(
     profile, _target = registry.resolve(args.device, targets, require_online=True)
     device = HarmonyDevice(hdc, profile, state_dir=args.state_dir)
 
-    with device.acquire_lock(wait_timeout=args.wait_lock):
-        result = device.screenshot(
-            args.out,
-            image_format=args.format,
-            display_id=args.display_id,
-            max_width=args.max_width,
-            timeout=args.timeout,
-        )
+    result, snapshot = capture_screenshot(
+        device, args.out, som=args.som, image_format=args.format,
+        display_id=args.display_id, max_width=args.max_width,
+        timeout=args.timeout, wait_lock=args.wait_lock,
+    )
 
     dims = (
         f"{result.width}x{result.height}"
@@ -756,7 +749,11 @@ def _cmd_screenshot(
         f"Captured {result.image_format} screenshot ({dims}, {result.size_bytes} bytes) "
         f"from {result.alias} -> {result.path}"
     )
-    return ExitCode.OK, result.to_dict(), human
+    data = result.to_dict()
+    if snapshot is not None:
+        data["snapshot"] = snapshot.to_dict()
+        data["som"] = True
+    return ExitCode.OK, data, human
 
 
 def _cmd_schema() -> tuple[ExitCode, dict[str, Any], str]:

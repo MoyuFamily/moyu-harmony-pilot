@@ -308,7 +308,7 @@ def build_cli_schema() -> dict[str, Any]:
                         "type": "boolean",
                         "default": False,
                         "description": (
-                            "Set-of-Mark `@eN` overlay annotation (planned in M2 vision extra)."
+                            "Set-of-Mark references and matching snapshot using the vision extra."
                         ),
                     },
                     "--wait-lock": {

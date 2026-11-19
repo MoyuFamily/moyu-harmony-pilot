@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import os
 from pathlib import Path
 from typing import Any
-
-from tests.fakes import (
-    FakeDeviceState,
-    FakeHdcTransport,
-    build_large_harmony_layout,
-)
 
 from moyu_harmony_pilot.cli import (
     SCHEMA_VERSION,
@@ -36,6 +31,11 @@ from moyu_harmony_pilot.hdc import (
     HdcTimeoutError,
 )
 from moyu_harmony_pilot.ui import UiConcurrentCallError
+from tests.fakes import (
+    FakeDeviceState,
+    FakeHdcTransport,
+    build_large_harmony_layout,
+)
 
 
 def _run_cli(
@@ -263,7 +263,7 @@ def test_dump_ui_low_token_contract_lock_contention_and_file_mode(tmp_path: Path
     assert env_busy["error"]["retryable"] is True
 
 
-def test_screenshot_command_and_invalid_cli_args_json_envelope(tmp_path: Path) -> None:
+def test_screenshot_command_and_invalid_cli_args_json_envelope(tmp_path: Path, monkeypatch) -> None:
     raw_serial = "SENSITIVE_SHOT_SN_01"
     config = tmp_path / "devices.local.json"
     config.write_text(json.dumps({"devices": {"harmony-01": raw_serial}}), encoding="utf-8")
@@ -296,7 +296,14 @@ def test_screenshot_command_and_invalid_cli_args_json_envelope(tmp_path: Path) -
     assert env["data"]["width"] == 1260
     assert env["data"]["height"] == 2720
 
-    # `--som` fails closed with exit code 2 in M1
+    # Missing optional rendering dependencies fail before device access.
+    from moyu_harmony_pilot.vision import VisionUnavailableError
+
+    def missing_pillow():
+        raise VisionUnavailableError("Optional renderer unavailable.")
+
+    monkeypatch.setattr(importlib.import_module("moyu_harmony_pilot.cli.main"),
+                        "require_pillow", missing_pillow)
     code_som, out_som, _ = _run_cli(
         [
             "screenshot",
@@ -314,7 +321,7 @@ def test_screenshot_command_and_invalid_cli_args_json_envelope(tmp_path: Path) -
         transport=fake,
     )
     assert code_som == int(ExitCode.CONFIG_ERROR)
-    assert _parse_single_json_envelope(out_som)["error"]["code"] == "configuration_error"
+    assert _parse_single_json_envelope(out_som)["error"]["code"] == "vision_unavailable"
 
     # Missing required --out STILL emits valid JSON envelope on stdout with exit code 2!
     code_arg, out_arg, _ = _run_cli(["screenshot", "--json"])

@@ -19,6 +19,7 @@ from moyu_harmony_pilot.hdc import (
     HdcNotFoundError,
 )
 from moyu_harmony_pilot.ui import UiConcurrentCallError, UiError, UiInvalidInputError
+from moyu_harmony_pilot.vision import VisionError, VisionUnavailableError
 
 
 class ExitCode(IntEnum):
@@ -75,6 +76,10 @@ def classify_exception(
     exc: Exception,
 ) -> tuple[ExitCode, str, str, bool, str | None]:
     """Map any exception to `(exit_code, error_code, message, retryable, hint)`."""
+    if isinstance(exc, VisionUnavailableError):
+        return (ExitCode.CONFIG_ERROR, exc.code, str(exc), exc.retryable, exc.hint)
+    if isinstance(exc, VisionError):
+        return (ExitCode.FAILED, exc.code, str(exc), exc.retryable, exc.hint)
     if isinstance(exc, HumanRequiredError):
         return (ExitCode.HUMAN_REQUIRED, exc.code, exc.message, exc.retryable, exc.hint)
 

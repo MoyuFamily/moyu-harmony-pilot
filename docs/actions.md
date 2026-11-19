@@ -80,3 +80,13 @@ Runner-generated failures contain stable status codes and generic summaries. Plu
 The current CLI provides local execution. The registry and runner expose `remote=True` for future adapters, together with an explicit `allowed_actions` collection. The default collection is empty. Remote discovery filters external entry-point names and directory manifest IDs before loading their modules. Remote invocation checks the allowlist again and rejects actions marked `local_only`, including `ui.inspect`.
 
 The Pull Bridge and MCP adapters are planned for M3.
+
+## Local vision and guarded interaction
+
+Install `moyu-harmony-pilot[vision]` for Pillow-based SoM annotation and screenshot resizing. `harmony-pilot screenshot --out .state/screen.png --som --max-width 720 --json` captures under the device lock, checks the layout before and after capture, scales marks to the saved image and returns the matching compact snapshot. Layout changes produce `layout_changed` so the caller can capture again.
+
+Install `[vision-macos]` or `[vision-rapidocr]` for OCR. Use `create_ocr_engine("macos")` or `create_ocr_engine("rapidocr")` from `moyu_harmony_pilot.vision`, then call `recognize(local_image_path_or_bytes)`. Each `TextBox` has text, pixel bounds with a top-left origin, confidence and center coordinates. `find_text` accepts exact text or a regular expression and a minimum confidence. Backend imports are lazy and missing dependencies produce `VisionUnavailableError`. OCR observations remain local.
+
+`InteractionSession` provides local `observe`, `click_ref`, directional `swipe`, `back` and `wait_for`. Each session has a fixed wall-clock lifetime and step budget. Mutating calls require the previously observed `layout_hash`, acquire the device lock, capture fresh references, check temperature and sensitive screens, then return the new snapshot, foreground bundle, focus references and layout difference. An uncertain post-input result returns `unknown` and requires observation before another step.
+
+Pass a `PopupWatcher` to `wait_for` to enable exact-label, exact-bundle dismissal rules. The default rule collection is empty. Rules require a unique enabled clickable match, stop on sensitive screens and charge each layout at most once within the configured dismissal budget.

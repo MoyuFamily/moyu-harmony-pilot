@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import math
-import signal
-import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
+from moyu_harmony_pilot.actions.budget import bounded_call as _bounded_call
+from moyu_harmony_pilot.actions.budget import ensure_deadline_available
 from moyu_harmony_pilot.actions.ledger import ActionLedger, LedgerKey
 from moyu_harmony_pilot.actions.models import (
     ActionBudgetExceeded,
@@ -31,27 +30,6 @@ from moyu_harmony_pilot.device import (
 )
 from moyu_harmony_pilot.hdc import DeviceOfflineError, DeviceUnauthorizedError
 from moyu_harmony_pilot.ui import UiConcurrentCallError
-
-T = TypeVar("T")
-
-
-def _deadline_handler(signum: int, frame: Any) -> None:
-    raise ActionBudgetExceeded
-
-
-def _bounded_call(ctx: ActionContext, callback: Callable[[], T]) -> T:
-    """Interrupt a plugin stage and restore the caller signal handler on every path."""
-    ctx.checkpoint()
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.signal(signal.SIGALRM, _deadline_handler)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, ctx.remaining_timeout)
-        result = callback()
-        _ = ctx.remaining_timeout
-        return result
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _failure(exc: BaseException, *, submitted: bool = False) -> ActionOutcome:
@@ -128,12 +106,7 @@ class ActionRunner:
         )
         if dry_run:
             return ActionOutcome(summary="Action parameters and device selection validated.")
-        if threading.current_thread() is not threading.main_thread():
-            raise DeviceConfigurationError("Run actions in the main thread of a dedicated process.")
-        if signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0):
-            raise DeviceConfigurationError(
-                "Action execution requires an available POSIX real timer."
-            )
+        ensure_deadline_available()
         ctx = ActionContext(device, time.monotonic() + seconds, max_steps)
         with device.acquire_lock():
             try:

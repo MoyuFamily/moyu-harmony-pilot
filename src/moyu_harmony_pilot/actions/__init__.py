@@ -1,5 +1,6 @@
 """L4: ActionPlugin contracts, allowlist registry, plugin loading, and idempotent ledger."""
 
+from moyu_harmony_pilot.actions.interaction import InteractionSession
 from moyu_harmony_pilot.actions.ledger import ActionLedger
 from moyu_harmony_pilot.actions.models import (
     ActionContext,
@@ -24,4 +25,5 @@ __all__ = [
     "ActionStatus",
     "IdempotentAction",
     "Inspection",
+    "InteractionSession",
 ]
