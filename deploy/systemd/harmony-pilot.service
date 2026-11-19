@@ -1,0 +1,17 @@
+[Unit]
+Description=HarmonyOS NEXT outbound task bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=harmony-pilot
+WorkingDirectory=/opt/moyu-harmony-pilot
+ExecStart=/opt/moyu-harmony-pilot/.venv/bin/harmony-pilot serve --config /etc/harmony-pilot/bridge.local.json --json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

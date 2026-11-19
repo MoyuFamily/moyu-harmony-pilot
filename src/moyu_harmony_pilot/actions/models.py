@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -123,15 +124,23 @@ class ActionBudgetExceeded(BaseException):
     """Interrupt execution even when plugin code catches ordinary exceptions."""
 
 
+class ActionCancelled(ActionBudgetExceeded):
+    """Stop at a deadline or checkpoint when the owner withdraws its execution lease."""
+
+
 @dataclass
 class ActionContext:
     device: HarmonyDevice
     deadline: float
     max_steps: int = 100
     steps: int = 0
+    cancelled: Callable[[], bool] | None = None
+    on_stage: Callable[[str], None] | None = None
 
     @property
     def remaining_timeout(self) -> float:
+        if self.cancelled is not None and self.cancelled():
+            raise ActionCancelled
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise ActionBudgetExceeded

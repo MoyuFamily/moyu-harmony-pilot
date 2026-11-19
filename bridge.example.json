@@ -1,0 +1,15 @@
+{
+  "bridge_id": "edge-example",
+  "broker_url": "https://broker.example.org",
+  "devices_config": "devices.local.json",
+  "state_dir": ".state",
+  "token_file": "bridge-token.local",
+  "allowed_actions": {
+    "harmony-01": ["device.ping", "device.health"]
+  },
+  "heartbeat_seconds": 30,
+  "poll_seconds": 15,
+  "wait_seconds": 15,
+  "lease_seconds": 15,
+  "request_timeout": 10
+}

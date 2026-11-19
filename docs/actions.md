@@ -79,7 +79,7 @@ Runner-generated failures contain stable status codes and generic summaries. Plu
 
 The current CLI provides local execution. The registry and runner expose `remote=True` for future adapters, together with an explicit `allowed_actions` collection. The default collection is empty. Remote discovery filters external entry-point names and directory manifest IDs before loading their modules. Remote invocation checks the allowlist again and rejects actions marked `local_only`, including `ui.inspect`.
 
-The Pull Bridge and MCP adapters are planned for M3.
+The Pull Bridge uses these gates through `serve`. MCP integration follows the same action contract.
 
 ## Local vision and guarded interaction
 

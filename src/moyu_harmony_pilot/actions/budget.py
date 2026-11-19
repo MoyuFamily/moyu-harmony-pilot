@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from moyu_harmony_pilot.actions.models import ActionBudgetExceeded, ActionContext
+from moyu_harmony_pilot.actions.models import ActionContext
 from moyu_harmony_pilot.device import DeviceConfigurationError
 
 T = TypeVar("T")
@@ -20,16 +20,19 @@ def ensure_deadline_available() -> None:
         raise DeviceConfigurationError("Action execution requires an available POSIX real timer.")
 
 
-def _deadline_handler(signum: int, frame: Any) -> None:
-    raise ActionBudgetExceeded
-
-
-def bounded_call(ctx: ActionContext, callback: Callable[[], T]) -> T:
+def bounded_call(ctx: ActionContext, callback: Callable[[], T], *, stage: str | None = None) -> T:
+    if stage is not None and ctx.on_stage is not None:
+        ctx.on_stage(stage)
     ctx.checkpoint()
+
+    def check_deadline(signum: int, frame: Any) -> None:
+        _ = ctx.remaining_timeout
+
     previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.signal(signal.SIGALRM, _deadline_handler)
+    signal.signal(signal.SIGALRM, check_deadline)
     try:
-        signal.setitimer(signal.ITIMER_REAL, ctx.remaining_timeout)
+        interval = min(0.1, ctx.remaining_timeout)
+        signal.setitimer(signal.ITIMER_REAL, interval, interval)
         result = callback()
         _ = ctx.remaining_timeout
         return result

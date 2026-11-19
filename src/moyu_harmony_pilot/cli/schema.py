@@ -103,6 +103,20 @@ def build_cli_schema() -> dict[str, Any]:
             },
         },
         "commands": {
+            "serve": {
+                "side_effect": "action_defined",
+                "description": "Outbound protocol-v1 worker with per-device capabilities.",
+                "options": {
+                    "--config": {"type": "string", "required": True,
+                                 "description": "Private Bridge JSON configuration path."},
+                    "--once": {"type": "boolean", "default": False},
+                    "--check": {"type": "boolean", "default": False},
+                    "--health": {"type": "boolean", "default": False},
+                },
+                "mutually_exclusive": [["--once", "--check", "--health"]],
+                "examples": ["harmony-pilot serve --config bridge.local.json --check --json",
+                             "harmony-pilot serve --config bridge.local.json --json"],
+            },
             "plugins": {
                 "side_effect": "readonly",
                 "description": "Discover trusted installed and explicitly configured plugins.",

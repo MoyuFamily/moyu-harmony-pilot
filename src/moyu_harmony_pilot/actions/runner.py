@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from moyu_harmony_pilot.actions.budget import ensure_deadline_available
 from moyu_harmony_pilot.actions.ledger import ActionLedger, LedgerKey
 from moyu_harmony_pilot.actions.models import (
     ActionBudgetExceeded,
+    ActionCancelled,
     ActionContext,
     ActionOutcome,
     ActionPlugin,
@@ -50,9 +52,9 @@ def _failure(exc: BaseException, *, submitted: bool = False) -> ActionOutcome:
     else:
         status = "failed"
     code = "action_budget_exceeded" if isinstance(exc, ActionBudgetExceeded) else status
-    return ActionOutcome(
-        status=status, summary="Action execution stopped.", error_code=code
-    )
+    if isinstance(exc, ActionCancelled):
+        code = "action_cancelled"
+    return ActionOutcome(status=status, summary="Action execution stopped.", error_code=code)
 
 
 class ActionRunner:
@@ -95,6 +97,8 @@ class ActionRunner:
         max_steps: int = 100,
         remote: bool = False,
         dry_run: bool = False,
+        cancelled: Callable[[], bool] | None = None,
+        on_stage: Callable[[str], None] | None = None,
     ) -> ActionOutcome:
         plugin, spec, params, seconds = self.prepare(
             action_id,
@@ -107,7 +111,9 @@ class ActionRunner:
         if dry_run:
             return ActionOutcome(summary="Action parameters and device selection validated.")
         ensure_deadline_available()
-        ctx = ActionContext(device, time.monotonic() + seconds, max_steps)
+        ctx = ActionContext(
+            device, time.monotonic() + seconds, max_steps, cancelled=cancelled, on_stage=on_stage
+        )
         with device.acquire_lock():
             try:
                 if isinstance(plugin, IdempotentAction):
@@ -130,7 +136,9 @@ class ActionRunner:
                             timeout=ctx.remaining_timeout,
                         ),
                     )
-                outcome = _bounded_call(ctx, lambda: plugin.execute(ctx, json_copy(params)))
+                outcome = _bounded_call(
+                    ctx, lambda: plugin.execute(ctx, json_copy(params)), stage="inspect"
+                )
                 return outcome.validate(spec)
             except (DeviceBusyError, UiConcurrentCallError):
                 raise
@@ -147,7 +155,9 @@ class ActionRunner:
         key: LedgerKey,
     ) -> ActionOutcome:
         _bounded_call(ctx, lambda: ctx.device.assert_thermal_safe(timeout=ctx.remaining_timeout))
-        inspection = _bounded_call(ctx, lambda: plugin.inspect(ctx, json_copy(params)))
+        inspection = _bounded_call(
+            ctx, lambda: plugin.inspect(ctx, json_copy(params)), stage="inspect"
+        )
         if not isinstance(inspection, Inspection) or inspection.status not in {
             "ready",
             "already_done",
@@ -192,8 +202,12 @@ class ActionRunner:
             if inspection.status == "already_done":
                 outcome = observed
             else:
-                _bounded_call(ctx, lambda: plugin.submit(ctx, inspection, json_copy(params)))
-                confirmed = _bounded_call(ctx, lambda: plugin.confirm(ctx, json_copy(params)))
+                _bounded_call(
+                    ctx, lambda: plugin.submit(ctx, inspection, json_copy(params)), stage="submit"
+                )
+                confirmed = _bounded_call(
+                    ctx, lambda: plugin.confirm(ctx, json_copy(params)), stage="confirm"
+                )
                 confirmed = confirmed.validate(spec)
                 if confirmed.status in {"succeeded", "already_done"}:
                     outcome = confirmed

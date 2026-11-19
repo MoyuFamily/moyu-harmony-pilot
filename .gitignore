@@ -18,6 +18,9 @@ diagnostics/
 plugins_local/
 devices.local.yaml
 devices.local.json
+devices.local.yml
+bridge.local.*
+bridge-token.local
 
 # Environments
 .env
