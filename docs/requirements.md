@@ -12,10 +12,11 @@
 
 随着纯血鸿蒙（HarmonyOS NEXT，API 12+）彻底脱离 AOSP / Android 生态，传统基于 `adb`、`uiautomator2`、`Appium` 或手机端无障碍脚本（AutoJS / AutoX.js）的自动化方案均已失效。现有社区工具大多面向临时测试场景，普遍依赖逆向私有 `uitest` 守护进程 Socket 协议，在系统升级时易失效，且缺乏长期无人值守运行所必需的**设备互斥锁、幂等防重状态机、硬件健康保护与跨 NAT 安全任务派发能力**。
 
-`moyu-harmony-pilot` 旨在提供一套**独立、轻量、无侵入、生产级的纯血鸿蒙 Python 自动化引擎与安全任务派发桥**：
+`moyu-harmony-pilot` 旨在提供一套**独立、轻量、无侵入、Agent 友好、生产级的纯血鸿蒙 Python 自动化引擎与安全任务派发桥**：
 
-1. **作为独立开源工具（Standalone Mode）**：开发者可直接通过 Python SDK 或 CLI 驱动本机连接的纯血鸿蒙真机，完成控件树抓取、UI 交互、截屏诊断、健康巡检及自定义插件动作执行，**不依赖任何外部平台或云端服务**。
+1. **作为独立开源工具（Standalone Mode）**：开发者或 AI Agent 可直接通过 Python SDK 或机器优先的 CLI 驱动本机连接的纯血鸿蒙真机，完成控件树抓取、紧凑语义快照、UI 交互、截屏诊断、健康巡检及自定义插件动作执行，**不依赖任何外部平台或云端服务**。
 2. **作为边缘任务执行节点（Pull Bridge Mode）**：可通过标准、服务端无关的单向 HTTPS 出站协议，将 NAT 内网中的纯血鸿蒙真机安全接入任意兼容的外部调度器或控制面，在不暴露本地端口和调试通道的前提下完成远程任务派发与脱敏回执回收。
+3. **原生面向 AI Agent 时代（Agent-Friendly First）**：从接口契约、UI 语义压缩、自描述 Schema、防失控护栏到文档与 Skill 规范，原生适配现代 Coding Agent 与 Runtime Agent（CLI-First，并支持可选轻量 MCP 薄封装），让人类开发者与 AI Agent 都能低 Token、低歧义、高安全性地开发、调试和编排纯血鸿蒙真机任务。
 
 ---
 
@@ -29,6 +30,7 @@
 - 面向外部插件的标准化 `ActionPlugin` 契约与 Fail-Closed 白名单加载机制。
 - 本地单设备互斥、幂等三段式执行框架（`inspect → submit → confirm`）、本地脱敏诊断落盘与硬件健康遥测（电量、充电状态、电池温度）。
 - 服务端无关的 Pull Bridge 协议规范与出站客户端（详见 [docs/bridge-protocol.md](bridge-protocol.md)）。
+- 原生 Agent 友好能力：统一 JSON 输出信封与语义化退出码、Token 友好的紧凑 UI 语义快照（`@eN` 引用索引）、CLI/插件 Schema 自描述、`AGENTS.md` 与标准 Agent Skill 模板、防失控安全护栏，以及可选的轻量 MCP 薄适配层。
 
 ### 2.2 明确非目标（Non-Goals）
 
@@ -96,18 +98,23 @@ moyu-harmony-pilot/
 ├── pyproject.toml
 ├── LICENSE
 ├── SECURITY.md
+├── AGENTS.md                        # 面向 AI Coding Agent 的仓库契约、红线与验证 SOP
 ├── README.md
 ├── docs/
 │   ├── requirements.md              # 本文档
+│   ├── device-setup.md              # 本地环境与纯血鸿蒙真机准备指南
 │   └── bridge-protocol.md           # 通用 Pull Bridge HTTP 协议规范
+├── skills/
+│   └── harmony-pilot/SKILL.md       # 标准 Agent Skill（教外部 Agent 安全调用本工具）
 ├── src/moyu_harmony_pilot/
 │   ├── hdc/                         # L1: 官方 hdc CLI 封装、命令超时、错误分类、文件收发
-│   ├── ui/                          # L2: uitest dumpLayout 解析、UiNode 树、选择器、手势交互
+│   ├── ui/                          # L2: uitest dumpLayout 解析、UiNode 树、紧凑语义快照、选择器、手势交互
 │   ├── device/                      # L3: 设备抽象、alias 映射、锁、应用/电源/截屏、电池温度遥测、诊断落盘
-│   ├── vision/                      # L3(可选): OcrEngine 协议、macOS Vision / RapidOCR 适配器、弹窗 Watcher
+│   ├── vision/                      # L3(可选): OcrEngine 协议、macOS Vision / RapidOCR 适配器、弹窗 Watcher、SoM 标注
 │   ├── actions/                     # L4: ActionPlugin 契约、白名单注册表、插件发现、幂等账本、内置动作与示例
 │   ├── bridge/                      # L5: 标准 Pull Bridge 出站客户端、心跳、租约续期、退避重连
-│   └── cli/                         # L5: 统一命令行入口
+│   ├── cli/                         # L5: 机器优先统一 CLI 入口（JSON 信封、语义退出码、Schema 自描述）
+│   └── mcp/                         # L5(可选): 轻量 MCP Server 薄适配层（复用 actions/device/ui，零重复逻辑）
 └── tests/                           # 全离线 Mock 测试 + 脱敏布局 Fixture（零真机依赖跑 CI）
 ```
 
@@ -120,14 +127,15 @@ hdc (仅依赖 Python 标准库)
            └──────────────┬────────────────────────┘
                           ▼
                        actions (依赖 device, ui, vision 协议)
-                     ┌────┴────┐
-                     ▼         ▼
-                  bridge      cli
+                 ┌────────┼────────┐
+                 ▼        ▼        ▼
+              bridge     cli      mcp (可选薄适配)
 ```
 
-- **未来拆库切分线**：`hdc + ui + device (+ vision)` 天然构成零服务耦合的纯驱动 SDK；`actions + bridge + cli` 构成任务执行与边缘接入守护服务。只要严守上述单向依赖，拆库无需重写业务代码。
+- **未来拆库切分线**：`hdc + ui + device (+ vision)` 天然构成零服务耦合的纯驱动 SDK；`actions + bridge + cli (+ mcp)` 构成任务执行、边缘接入与 Agent 工具层。只要严守上述单向依赖，拆库无需重写业务代码。
 - **依赖分级（`pyproject.toml` optional extras）**：
-  - 核心包（默认安装）：**仅依赖 Python 3.11+ 标准库**（HTTP 客户端在 `bridge` 层默认可用 `urllib.request` 或最小依赖，尽量保持极轻）。
+  - 核心包（默认安装）：**仅依赖 Python 3.11+ 标准库**（Compact UI 压缩、JSON 信封、Schema 自描述与 Bridge 客户端均尽量零重依赖）。
+  - `[mcp]`：可选标准 MCP Server 运行时依赖。
   - `[vision-macos]`：macOS 原生 Vision OCR 绑定（可选）。
   - `[vision-rapidocr]`：跨平台 RapidOCR 后端（可选）。
   - `[dev]`：`pytest`、`ruff`、`mypy` 等开发工具。
@@ -162,6 +170,9 @@ hdc (仅依赖 Python 标准库)
 3. **官方输入原语封装（`uitest uiInput`）**：
    - 封装 `click`、`doubleClick`、`longClick`、`swipe`、`fling`、`drag`、`dircFling`、`inputText`、`keyEvent`（`Home` / `Back` / 电源等）。
    - 支持点击 `UiNode`（自动取安全中心点，支持轻微偏移校验）以及归一化比例坐标 `(0.0~1.0, 0.0~1.0)`。
+4. **Token 友好的紧凑语义快照（Compact UI Snapshot）与状态差分**：
+   - 实测真机原始 `uitest dumpLayout` JSON 常达 `100–200 KB`（直接输入大模型会浪费数万 Token）；`ui` 层内置确定性压缩器：自动剪枝不可见/无语义空容器、保留含文本/描述/可交互节点，并为可交互节点分配确定性短引用 `@e1`、`@e2`、…（附带类型、文本、描述与归一化坐标/中心点），将单屏上下文压缩至约 `2–4 KB`。
+   - 计算当前界面结构指纹（`layout_hash`），支持交互前后对比是否发生页面跳转或节点变更，向脚本与 AI Agent 提供明确的差分反馈。
 
 ### FR-3：设备管理、硬件保护与诊断（`moyu_harmony_pilot.device`）
 
@@ -219,17 +230,19 @@ hdc (仅依赖 Python 标准库)
      - `ui.inspect`（仅限本地 CLI，不默认暴露给远端）：抓取并保存当前页面控件树摘要供开发调试。
    - 内置脱敏示例插件（如 `example.settings_inspect`，仅演示 `ActionPlugin` 接口写法与测试方式，默认不在远程白名单中开启）。
 
-### FR-6：独立 CLI 工具（`moyu_harmony_pilot.cli`）
+### FR-6：机器优先 CLI 工具（`moyu_harmony_pilot.cli`）
 
-所有命令支持 `--json` 机器可读输出，并遵循默认安全原则：
+所有命令均按 **Agent / 自动化优先** 设计：`--json` 时 `stdout` 仅输出严格 JSON 信封、诊断日志全走 `stderr`，并保证稳定的语义退出码：
 
 | 命令 | 说明 |
 | :--- | :--- |
 | `harmony-pilot devices` | 列出当前已连接的设备、别名映射状态与基础健康信息 |
 | `harmony-pilot doctor` | 检查 `hdc` 路径/版本、设备连通、`uitest` 可用性、OCR 后端与本地目录权限 |
-| `harmony-pilot dump-ui --device <alias> --out <file>` | 抓取当前界面控件树 JSON 并输出简化节点预览（辅助开发外部插件） |
-| `harmony-pilot screenshot --device <alias> --out <file>` | 截取当前设备屏幕保存到本地 |
-| `harmony-pilot plugins list` | 列出已发现的内置与外部插件及其远程白名单状态 |
+| `harmony-pilot dump-ui --device <alias> [--compact] [--out <file>]` | 抓取当前界面控件树；`--compact` 输出带 `@eN` 引用的低 Token 语义快照 |
+| `harmony-pilot screenshot --device <alias> --out <file> [--max-width <px>] [--som]` | 截取当前屏幕；可选缩放与 Set-of-Mark（`@eN` 编号框）标注以服务多模态视觉 Agent |
+| `harmony-pilot schema` | 输出完整 CLI 命令、状态枚举、退出码与全局契约 JSON Schema（自描述） |
+| `harmony-pilot plugins list` | 列出已发现的内置与外部插件、副作用级别及其远程白名单状态 |
+| `harmony-pilot plugins describe <action_id>` | 输出单个 Action 插件的参数 JSON Schema、返回指标说明与安全级别 |
 | `harmony-pilot run --device <alias> --action <id> [--idempotency-key ...] [--params-json ...] [--dry-run]` | 本地执行单个动作（`--dry-run` 仅校验配置/设备/参数，不触发 UI 交互） |
 | `harmony-pilot serve --config <path>` | 启动 Pull Bridge 常驻守护进程（对接任意实现 `bridge-protocol` 的远端 Broker） |
 
@@ -242,6 +255,39 @@ hdc (仅依赖 Python 标准库)
   - 执行结束后上报脱敏结构化回执（`complete`），支持网络抖动下的幂等重传；
   - 收到 `SIGTERM` / `SIGINT` 时停止拉取新任务、等待当前任务到达安全点并优雅释放锁后退出；
   - 断网/远端不可达时采用带抖动的指数退避重连，不影响本机已落盘账本。
+
+### FR-8：Agent 友好能力与安全护栏（Agent-Friendly First）
+
+为确保本项目对 **开发侧 AI Agent（写代码/开发插件）** 与 **运行侧 AI Agent（把纯血鸿蒙真机作为工具编排调用）** 都原生友好，建立以下六项硬性契约：
+
+1. **统一结构化信封与语义退出码**
+   - `--json` 模式统一输出：
+     `{"schema_version": 1, "ok": true|false, "command": "...", "data": {...}, "error": {"code": "...", "message": "...", "retryable": false, "hint": "..."}}`
+   - 固定语义退出码，避免 Agent 用脆弱正则解析自然语言报错：
+     - `0`：成功（含 `already_done`）
+     - `1`：一般执行失败（`failed` / `unknown`）
+     - `2`：参数、Schema 或配置错误（`configuration_error`）
+     - `3`：设备离线或未授权（`device_offline` / `unauthorized`）
+     - `4`：需要人工介入（`human_required`，如验证码、掉登录、敏感确认）
+     - `5`：触发硬件保护门控（`device_overheated`）
+     - `6`：设备忙 / 本地互斥锁冲突（`device_busy`）
+2. **低 Token 视觉与语义接口**
+   - 控件树默认提供 `--compact` 紧凑语义视图（`@e1`, `@e2`, … 编号索引），显著降低上下文开销并消除坐标猜测幻觉；
+   - 截屏可选缩放（`--max-width`）及 Set-of-Mark（`--som`，将 `@eN` 编号叠加绘制在截图上），直接服务多模态视觉 Agent。
+3. **自描述契约（Zero-Guess Introspection）**
+   - 通过 `harmony-pilot schema` 与 `harmony-pilot plugins describe <action_id>` 输出机器可读 JSON Schema、副作用等级（`readonly` / `mutating`）及示例入参，Agent 无需通读源码即可准确构造调用。
+4. **双模接入面（CLI-First + 可选轻量 MCP 薄适配）**
+   - **CLI-First**：任何具备终端能力的 Coding Agent 可直接以零额外依赖调用 `harmony-pilot ... --json`。
+   - **可选 MCP Server（`moyu_harmony_pilot.mcp`，`[mcp]` optional extra）**：仅作为薄协议转发层，直接复用 `actions / device / ui` 内核与安全门控，严格区分两种运行模式：
+     - **Safe Mode（默认）**：仅暴露只读观测工具（设备列表、健康遥测、紧凑 UI 快照、截屏）和白名单 `run_action`；
+     - **Local Interactive Lab Mode（仅本地显式开启，绝不经远程 Bridge 暴露）**：用于本机探索新 App 或辅助开发外部插件，允许经授权的本地 Agent 按 `@eN` 引用执行受限步进操作（点击引用、滑动、返回），并在每步后自动返回最新紧凑快照与 `changed` 状态差分。
+5. **Agent 防失控护栏（Guardrails）**
+   - **步数与耗时硬预算**：交互探索与单任务执行强制设置最大步数与墙钟超时，防止 Agent 陷入死循环。
+   - **操作前后差分反馈**：向 Agent 返回前台包名、`layout_hash` 是否变化及新旧焦点变化，防止无效重复点击。
+   - **敏感场景强制熔断**：检测到密码输入、验证码、支付确认或高危权限弹窗时立即返回 `human_required`（退出码 `4`）并附带明确 `hint`，强制交由人类接管。
+6. **仓库级 Agent 规范与标准 Skill**
+   - 根目录维护 [AGENTS.md](../AGENTS.md)（架构 DAG、离线验证命令、Mock Fixture 规范与安全红线），让任意 Coding Agent 零门槛安全协作；
+   - 仓库提供标准 `skills/harmony-pilot/SKILL.md`，方便外部用户一键将 `harmony-pilot` 的最佳实践与安全操作流接入主流 Agent 平台。
 
 ---
 
@@ -266,8 +312,8 @@ hdc (仅依赖 Python 标准库)
 
 | 阶段 | 交付内容 | 验收标准 |
 | :--- | :--- | :--- |
-| **M0（当前）** | 私有仓初始化（按开源标准）、`README`、`LICENSE`、`SECURITY`、需求文档与通用 Bridge 协议文档定稿 | 文档审阅通过，边界清晰无生态耦合 |
-| **M1（核心驱动与 CLI）** | `pyproject.toml` + `hdc` + `ui` + `device` 核心包 + `devices / doctor / dump-ui / screenshot` CLI + 全离线单测 | CI 全绿；本机连接真实纯血鸿蒙设备完成 `doctor`、电量温度读取、截图和真实控件树导出 |
-| **M2（插件框架与视觉兜底）** | `actions` 契约、白名单注册、外部插件发现、SQLite 幂等防重账本、内置系统动作 + 脱敏示例插件、`vision` OCR 抽象与 macOS Vision 适配 | 外部独立目录挂载插件可零侵入运行；幂等防重、超时 `unknown` 与过温保护单测全覆盖 |
-| **M3（Pull Bridge 与常驻运维）** | `bridge` 客户端实现（严格对齐 [bridge-protocol.md](bridge-protocol.md)）、`serve` 守护命令、`launchd` / `systemd` 示例、协议兼容性测试夹具（供任意外部 Broker 对接验收） | 离线模拟 Broker 端到端测试全绿（含断网重连、租约过期、幂等重传、优雅退出） |
+| **M0（当前）** | 私有仓初始化（按开源标准）、`README`、`LICENSE`、`SECURITY`、`AGENTS.md`、需求文档、环境与真机指南及通用 Bridge 协议文档定稿 | 文档审阅通过，边界清晰无生态耦合；本机 `hdc` 与真机通路实测通过 |
+| **M1（核心驱动与 Agent-Ready CLI）** | `hdc` + `ui`（含 `@eN` 紧凑语义快照与 `layout_hash`）+ `device` 核心包 + `devices / doctor / dump-ui --compact / screenshot / schema` CLI（统一 JSON 信封与语义退出码）+ 全离线单测 | CI 全绿；本机连接真实纯血鸿蒙设备完成 `doctor`、电量温度读取、截屏及紧凑 UI 快照导出 |
+| **M2（插件框架、自描述与视觉兜底）** | `actions` 契约、`plugins list / describe` 自描述 Schema、外部插件发现、SQLite 幂等防重账本、内置系统动作 + 脱敏示例插件、`vision` OCR 抽象（macOS Vision 适配与可选 `--som` 标注） | 外部独立目录挂载插件可零侵入运行；幂等防重、差分反馈、超时 `unknown` 与过温保护单测全覆盖 |
+| **M3（Pull Bridge、可选 MCP 与 Skill）** | `bridge` 客户端（严格对齐 [bridge-protocol.md](bridge-protocol.md)）、`serve` 守护命令、`launchd`/`systemd` 示例、协议兼容性测试夹具、可选 `[mcp]` 薄适配层（Safe / Local Lab 双模护栏）与 `skills/harmony-pilot/SKILL.md` | 离线模拟 Broker 与 MCP 护栏端到端测试全绿（含断网重连、租约过期、幂等重传、步数/敏感页熔断与优雅退出） |
 | **M4（应用侧集成 — 在本仓之外）** | 由任意外部调度系统或控制面按 [bridge-protocol.md](bridge-protocol.md) 实现服务端 Broker，并挂载独立私有或第三方插件完成端到端业务闭环 | 不改动 `moyu-harmony-pilot` 核心代码即可接入任意兼容服务端与外部插件 |

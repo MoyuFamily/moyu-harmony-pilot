@@ -12,15 +12,17 @@
 - **Zero On-Device Intrusion**: Does not require root, unlocked bootloaders, custom test HAP installation, or fragile reverse-engineered private daemon socket protocols.
 - **Standalone & Ecosystem-Independent**: Works completely standalone via CLI/Python SDK. Remote orchestration systems are ordinary external consumers implementing a standard HTTP pull protocol.
 - **Fail-Closed & Plugin-Driven**: Business workflows live in external or allowlisted `ActionPlugin` implementations. Remote dispatchers can only trigger explicitly allowlisted actions—never arbitrary shell commands.
-- **Single-Repo Modular Packages**: Clean one-way layered Python subpackages (`hdc` → `ui` → `device` / `vision` → `actions` → `bridge` / `cli`) designed so the core driver SDK can be extracted cleanly in the future if needed.
+- **Agent-Friendly First**: Machine-first CLI with deterministic JSON envelopes and semantic exit codes, token-efficient compact UI snapshots (`@e1/@e2` refs), self-describing JSON schemas, built-in safety guardrails, repository `AGENTS.md`, standard Agent Skill, and an optional thin MCP adapter.
+- **Single-Repo Modular Packages**: Clean one-way layered Python subpackages (`hdc` → `ui` → `device` / `vision` → `actions` → `bridge` / `cli` / optional `mcp`) designed so the core driver SDK can be extracted cleanly in the future if needed.
 
 ---
 
 ## Documentation
 
-- **[Requirements & Architecture Specification](docs/requirements.md)** — Scope, non-goals, responsibility boundaries, layered package design, plugin model, security invariants, and roadmap.
+- **[Requirements & Architecture Specification](docs/requirements.md)** — Scope, non-goals, responsibility boundaries, layered package design, plugin model, Agent-friendly contracts, security invariants, and roadmap.
 - **[Local Environment & Device Setup Guide](docs/device-setup.md)** — Official `hdc` installation (macOS ARM64 / Linux), Python 3.11 environment setup, HarmonyOS NEXT device prerequisites, read-only verification commands, and USB troubleshooting.
 - **[Pull Bridge Protocol Specification (v1 Draft)](docs/bridge-protocol.md)** — Server-agnostic HTTPS pull protocol (`heartbeat` / `claim` / `lease` / `complete`) for integrating any external scheduler or control plane.
+- **[AI Agent Guide](AGENTS.md)** — Architecture DAG, verification commands, testing boundaries, and security guardrails for AI coding agents working in this repository.
 - **[Security Policy](SECURITY.md)** — Secret handling, local-only diagnostics, and fail-closed execution rules.
 
 ---
