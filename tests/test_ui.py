@@ -5,13 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from tests.fakes import (
-    FakeDeviceState,
-    FakeHdcTransport,
-    build_large_harmony_layout,
-    load_home_layout_json,
-    make_second_page_layout_json,
-)
 
 from moyu_harmony_pilot.hdc import HdcClient, HdcFileTransferError
 from moyu_harmony_pilot.ui import (
@@ -30,6 +23,13 @@ from moyu_harmony_pilot.ui import (
     parse_bounds,
     parse_layout_dict,
     parse_layout_json,
+)
+from tests.fakes import (
+    FakeDeviceState,
+    FakeHdcTransport,
+    build_large_harmony_layout,
+    load_home_layout_json,
+    make_second_page_layout_json,
 )
 
 

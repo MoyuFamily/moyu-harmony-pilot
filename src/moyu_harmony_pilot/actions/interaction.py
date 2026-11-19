@@ -25,6 +25,13 @@ class InteractionSession:
     """Explicitly local exploration with fresh-reference checks and a fixed lifetime budget."""
 
     def __init__(self, device: HarmonyDevice, *, max_steps: int = 20, timeout: float = 60) -> None:
+        self.validate_budget(max_steps, timeout)
+        self.device = device
+        self.context = ActionContext(device, time.monotonic() + timeout, max_steps)
+        self._needs_observation = False
+
+    @staticmethod
+    def validate_budget(max_steps: int, timeout: float) -> None:
         if (
             type(max_steps) is not int
             or not 1 <= max_steps <= 1000
@@ -33,8 +40,6 @@ class InteractionSession:
             or not 0 < timeout <= 3600
         ):
             raise DeviceConfigurationError("Invalid local interaction budget.")
-        self.device = device
-        self.context = ActionContext(device, time.monotonic() + timeout, max_steps)
 
     def _locked(self, callback: Callable[[], T]) -> T:
         ensure_deadline_available()
@@ -50,7 +55,9 @@ class InteractionSession:
         return self.device.dump_ui_compact(timeout=self.context.remaining_timeout)
 
     def observe(self) -> CompactSnapshot:
-        return self._locked(self._capture)[1]
+        snapshot = self._locked(self._capture)[1]
+        self._needs_observation = False
+        return snapshot
 
     def click_ref(self, ref: str, *, layout_hash: str) -> dict:
         return self._step("click", layout_hash=layout_hash, ref=ref)
@@ -64,6 +71,8 @@ class InteractionSession:
         return self._step("back", layout_hash=layout_hash)
 
     def _step(self, action: str, *, layout_hash: str, ref: str = "", direction: str = "") -> dict:
+        if self._needs_observation:
+            raise DeviceConfigurationError("Observe the UI after an uncertain interaction.")
         submitted = False
 
         def perform() -> dict:
@@ -132,6 +141,7 @@ class InteractionSession:
             raise
         except Exception as exc:
             if submitted:
+                self._needs_observation = True
                 raise DeviceError(
                     "Interaction result is uncertain. Observe before continuing.", code="unknown"
                 ) from exc

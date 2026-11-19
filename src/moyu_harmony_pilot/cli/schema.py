@@ -28,6 +28,18 @@ def build_cli_schema() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "pilot_version": __version__,
         "program": "harmony-pilot",
+        "mcp_adapter": {
+            "program": "harmony-pilot-mcp", "extra": "mcp", "sdk_major": 2,
+            "transport": "stdio", "default_mode": "safe",
+            "options": {
+                "--config": {"type": "string"}, "--hdc-path": {"type": "string"},
+                "--state-dir": {"type": "string", "default": ".state"},
+                "--allow-action": {"type": "string", "repeatable": True, "default": []},
+                "--local-lab": {"type": "boolean", "default": False},
+                "--max-steps": {"type": "integer", "default": 20, "minimum": 1, "maximum": 1000},
+                "--timeout": {"type": "number", "default": 60, "maximum": 3600},
+            },
+        },
         "action_contract": {
             "schema_keywords": sorted(SCHEMA_KEYWORDS),
             "max_json_bytes": MAX_JSON_BYTES,

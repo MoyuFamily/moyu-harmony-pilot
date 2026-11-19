@@ -22,6 +22,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
 vision = ["pillow>=10.1"]
 vision-macos = [
     "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
@@ -34,10 +35,12 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.8.0",
     "pillow>=10.1",
+    "mcp>=2,<3",
 ]
 
 [project.scripts]
 harmony-pilot = "moyu_harmony_pilot.cli.main:main"
+harmony-pilot-mcp = "moyu_harmony_pilot.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
