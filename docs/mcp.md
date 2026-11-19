@@ -48,4 +48,4 @@ Configure an MCP client to launch the executable with explicit absolute paths. A
 }
 ```
 
-The standard Agent Skill is available at `skills/harmony-pilot/SKILL.md`. Copy that directory into the skill location used by the chosen agent.
+The standard Agent Skill is available at `skills/harmony-pilot/SKILL.md` in the repository and source archive. Wheel installations also place it under `share/moyu-harmony-pilot/skills/harmony-pilot` within the Python installation prefix. Copy that directory into the skill location used by the chosen agent.

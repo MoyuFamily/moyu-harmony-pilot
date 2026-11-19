@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from moyu_harmony_pilot.actions.models import ActionContext
+from moyu_harmony_pilot.actions.models import ActionBudgetExceeded, ActionContext
 from moyu_harmony_pilot.device import DeviceConfigurationError
 
 T = TypeVar("T")
@@ -26,7 +26,12 @@ def bounded_call(ctx: ActionContext, callback: Callable[[], T], *, stage: str | 
     ctx.checkpoint()
 
     def check_deadline(signum: int, frame: Any) -> None:
-        _ = ctx.remaining_timeout
+        try:
+            _ = ctx.remaining_timeout
+        except ActionBudgetExceeded:
+            # Allow bounded driver finally blocks to clean up after the first interruption.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            raise
 
     previous_handler = signal.getsignal(signal.SIGALRM)
     signal.signal(signal.SIGALRM, check_deadline)

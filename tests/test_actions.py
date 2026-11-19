@@ -25,6 +25,7 @@ from moyu_harmony_pilot.actions import (
     IdempotentAction,
     Inspection,
 )
+from moyu_harmony_pilot.actions.budget import bounded_call
 from moyu_harmony_pilot.actions.models import ActionBudgetExceeded
 from moyu_harmony_pilot.actions.validation import check_schema, json_copy, validate_value
 from moyu_harmony_pilot.device import (
@@ -300,6 +301,23 @@ def test_main_thread_timeout_preempts_plugin_sleep_and_restores_timer(execution)
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
     assert not execution[1].is_busy()
     assert run_mutation(execution).status == "unknown"
+
+
+def test_deadline_interrupts_once_and_allows_bounded_cleanup(execution):
+    cleaned = []
+
+    def operation():
+        try:
+            time.sleep(1)
+        finally:
+            time.sleep(0.12)
+            cleaned.append(True)
+
+    context = ActionContext(execution[1], time.monotonic() + 0.04)
+    with pytest.raises(ActionBudgetExceeded):
+        bounded_call(context, operation)
+    assert cleaned == [True]
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
 def test_step_budget_and_dry_run_never_submit(execution):
