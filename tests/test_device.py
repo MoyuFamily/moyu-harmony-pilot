@@ -188,6 +188,33 @@ def test_device_lock_in_process_and_cross_process_contention(tmp_path: Path) -> 
     assert is_device_busy(raw_serial, lock_dir) is False
 
 
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_interrupted_lock_acquisition_releases_descriptor_and_thread_lock(
+    tmp_path, monkeypatch, interruption
+):
+    lock_dir = tmp_path / "locks"
+    serial = "SYNTHETIC_INTERRUPTED_LOCK_" + interruption.__name__
+    lock = DeviceLock(serial, alias="lab", lock_dir=lock_dir)
+    descriptors = []
+
+    def interrupt_write(fd, data):
+        descriptors.append(fd)
+        raise interruption
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", interrupt_write)
+        with pytest.raises(interruption):
+            lock.acquire()
+
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert not is_device_busy(serial, lock_dir)
+    with lock:
+        assert is_device_busy(serial, lock_dir)
+    assert not is_device_busy(serial, lock_dir)
+
+
 def test_telemetry_parsers_calibrated_to_harmony_61() -> None:
     bat = parse_battery_dump(BATTERY_61_CHARGING)
     assert bat.battery_percent == 72

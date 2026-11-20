@@ -147,10 +147,14 @@ class DeviceLock:
             self._fd = fd
             self._acquired = True
             return True
-        except Exception:
-            if fd is not None:
-                os.close(fd)
-            self._thread_lock.release()
+        except BaseException:
+            self._fd = None
+            self._acquired = False
+            try:
+                if fd is not None:
+                    os.close(fd)
+            finally:
+                self._thread_lock.release()
             raise
 
     def release(self) -> None:
