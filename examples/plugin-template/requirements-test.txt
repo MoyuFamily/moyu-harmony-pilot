@@ -1,0 +1,2 @@
+# Reviewed Pilot development revision with action API declarations.
+moyu-harmony-pilot @ git+https://github.com/MoyuFamily/moyu-harmony-pilot.git@8a257909d1aa77c02fb742f99e742e99d0b9c1de

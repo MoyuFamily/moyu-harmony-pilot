@@ -32,10 +32,10 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Byte-compile check
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests examples/plugin-template
 
       - name: Lint (ruff)
-        run: ruff check src tests
+        run: ruff check src tests examples/plugin-template
 
       - name: Run offline unit test suite
         run: pytest -v

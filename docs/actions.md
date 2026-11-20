@@ -18,6 +18,10 @@ The default state directory is `.state`. Use the same `--state-dir` across invoc
 
 ## External plugin discovery
 
+Start a packaged plugin with the [standalone template](../examples/plugin-template/README.md).
+It includes Python package metadata, an installed entry point, offline contract tests
+and a macOS/Linux CI workflow pinned to a tested Pilot revision.
+
 Plugin code executes with the host process privileges. Install and configure reviewed, trusted plugins.
 
 For an installed Python package, register its class using the action ID as the entry-point name.

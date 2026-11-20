@@ -1,0 +1,4 @@
+include README.md LICENSE requirements-test.txt
+recursive-include tests *.py
+include .github/workflows/contract.yml
+global-exclude *.pyc *.pyo .DS_Store
