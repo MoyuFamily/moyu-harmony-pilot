@@ -13,10 +13,23 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from PIL import Image
 
 from moyu_harmony_pilot.actions import ActionRegistry
-from moyu_harmony_pilot.device import DeviceConfigurationError, DeviceProfile, DeviceRegistry
-from moyu_harmony_pilot.hdc import HdcClient
+from moyu_harmony_pilot.device import (
+    DeviceBusyError,
+    DeviceConfigurationError,
+    DeviceProfile,
+    DeviceRegistry,
+)
+from moyu_harmony_pilot.hdc import (
+    CommandResult,
+    DeviceOfflineError,
+    HdcClient,
+    HdcCommandError,
+    HdcTimeoutError,
+)
 from moyu_harmony_pilot.mcp import PilotTools
 from moyu_harmony_pilot.mcp.server import create_server
+from moyu_harmony_pilot.ui import UiError
+from moyu_harmony_pilot.vision import VisionError
 from tests.fakes import FakeDeviceState, FakeHdcTransport, make_second_page_layout_json
 from tests.test_actions import SampleMutation
 
@@ -76,6 +89,82 @@ def test_safe_tools_readonly_observation_and_allowlist(adapter):
     with pytest.raises(DeviceConfigurationError):
         facade.click_ref("phone", "@e1", "hash")
     assert not transport.all_remote_tmp_files()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        DeviceBusyError("Device is busy."),
+        DeviceOfflineError("Device is offline."),
+        HdcTimeoutError("hdc request timed out."),
+        UiError("Observe the UI again.", code="layout_changed", retryable=True),
+        DeviceConfigurationError("Reference must select an enabled clickable element."),
+        VisionError("Invalid SoM rectangle."),
+    ],
+)
+def test_tool_error_preserves_controlled_details_and_retryability(adapter, monkeypatch, error):
+    facade = adapter[0]
+
+    def fail(alias):
+        raise error
+
+    monkeypatch.setattr(facade, "health", fail)
+    result = invoke(create_server(facade), "health", {"alias": "phone"})
+    assert result == {
+        "ok": False,
+        "data": None,
+        "error": {
+            "code": error.code,
+            "message": str(error),
+            "hint": error.hint,
+            "retryable": error.retryable,
+        },
+    }
+
+
+def test_unknown_tool_errors_hide_uncontrolled_text_and_attributes(adapter, monkeypatch):
+    error = RuntimeError("PRIVATE_ERROR_TEXT")
+    error.code = "PRIVATE_ERROR_CODE"
+    error.hint = "PRIVATE_ERROR_HINT"
+
+    def fail(alias):
+        raise error
+
+    monkeypatch.setattr(adapter[0], "health", fail)
+    result = invoke(create_server(adapter[0]), "health", {"alias": "phone"})
+    assert result["error"]["code"] == "internal_error"
+    assert result["error"]["message"] == "Tool execution stopped."
+    assert not result["error"]["retryable"]
+    assert "PRIVATE_ERROR" not in json.dumps(result)
+
+
+def test_hdc_tool_error_retains_retryability_without_raw_subprocess_output(adapter, monkeypatch):
+    raw = CommandResult(
+        args=("shell",), returncode=1, stdout="PRIVATE_OUTPUT", stderr="", duration_ms=1
+    )
+    error = HdcCommandError("hdc failed (PRIVATE_OUTPUT)", result=raw, retryable=True)
+
+    def fail(alias):
+        raise error
+
+    monkeypatch.setattr(adapter[0], "health", fail)
+    result = invoke(create_server(adapter[0]), "health", {"alias": "phone"})
+    assert result["error"]["code"] == "hdc_command_failed"
+    assert result["error"]["retryable"]
+    assert "PRIVATE_OUTPUT" not in json.dumps(result)
+
+
+def test_real_device_busy_and_offline_errors_are_retryable(adapter):
+    facade, state, _, _ = adapter
+    server = create_server(facade)
+    with facade._device("phone").acquire_lock():
+        result = invoke(server, "health", {"alias": "phone"})
+        assert result["error"]["code"] == "device_busy"
+        assert result["error"]["retryable"]
+    state.status = "Offline"
+    result = invoke(server, "health", {"alias": "phone"})
+    assert result["error"]["code"] == "device_offline"
+    assert result["error"]["retryable"]
 
 
 def test_empty_allowlist_and_missing_sdk_fail_closed(adapter, monkeypatch):

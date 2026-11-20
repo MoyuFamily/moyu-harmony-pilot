@@ -46,6 +46,9 @@ class ActionSpec:
     examples: tuple[dict[str, Any], ...] = ()
     api_version: int = 1
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "examples", tuple(self.examples))
+
     def to_dict(self) -> dict[str, Any]:
         return json_copy(
             {

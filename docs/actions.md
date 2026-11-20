@@ -104,6 +104,8 @@ Implement `IdempotentAction` with three stages.
 
 Every mutating execution requires an explicit `--idempotency-key`. The SQLite identity combines hashed physical-device identity, action ID and hashed key. A request fingerprint binds the key to its parameters and plugin version. Reusing the key for a changed request returns `configuration_error`.
 
+Cancellation is checked through preparation and inspection, including immediately before the ledger reservation. Once the `submitting` reservation commits, the runner completes `submit` and `confirm` within the original time and step budgets. Shutdown requests and lease cancellation take effect after that sequence. Execution errors and exhausted budgets still produce `unknown` and block automatic replay.
+
 Confirmed records return `already_done` before plugin callbacks or device wake-up. Submission errors, timeouts, interruptions and inconclusive confirmation yield `unknown`. A process restart recovers leftover `submitting` records as `unknown` while holding the device lock. A failed final database write preserves the committed reservation and returns `unknown`.
 
 An `unknown` record requires read-only reconciliation or human review. Repeated calls with that key return `unknown`. Preserve the state directory during recovery so that the ledger retains the submission history. Automatic reconciliation and operator resolution commands remain future work.

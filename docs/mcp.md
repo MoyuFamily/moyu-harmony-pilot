@@ -17,6 +17,8 @@ Device selection accepts configured aliases. Screenshots are generated in the pr
 
 Tool responses include `ok`, `data` and structured errors. The MCP `isError` flag also marks unsuccessful calls. Plugin progress goes to stderr. Mutations reuse the same `ActionRunner`, locks, thermal guard and SQLite ledger as the CLI and Bridge.
 
+Controlled device, UI and vision errors retain their messages, codes, hints and retryability. HDC errors carrying subprocess results use a bounded driver-failure message with their code, hint and retryability. Unknown exceptions use a generic message. Uncertain mutation outcomes retain `retryable=false` and require reconciliation.
+
 ## Local lab mode
 
 ```bash

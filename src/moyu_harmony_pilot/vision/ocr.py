@@ -33,13 +33,20 @@ class RapidOcrEngine:
             boxes = []
             for polygon, text, confidence in (rows or [])[:1000]:
                 xs, ys = zip(*polygon, strict=True)
+                if max(xs) <= min(xs) or max(ys) <= min(ys):
+                    continue
                 bounds = (
                     max(0, math.floor(min(xs))),
                     max(0, math.floor(min(ys))),
                     math.ceil(max(xs)),
                     math.ceil(max(ys)),
                 )
-                boxes.append(TextBox(text, bounds, float(confidence)))
+                if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                    continue
+                score = float(confidence)
+                if not math.isfinite(score):
+                    raise VisionError("Invalid OCR confidence.")
+                boxes.append(TextBox(text, bounds, max(0.0, min(1.0, score))))
             return sorted(boxes, key=lambda box: (box.bounds[1], box.bounds[0], box.text))
         except Exception as exc:
             raise VisionError("RapidOCR recognition failed.") from exc
@@ -91,15 +98,22 @@ class MacOSVisionOcrEngine:
                         continue
                     candidate = candidates[0]
                     rect = observation.boundingBox()
+                    if rect.size.width <= 0 or rect.size.height <= 0:
+                        continue
                     left = max(0, math.floor(rect.origin.x * width))
                     top = max(0, math.floor((1 - rect.origin.y - rect.size.height) * height))
                     right = min(width, math.ceil((rect.origin.x + rect.size.width) * width))
                     bottom = min(height, math.ceil((1 - rect.origin.y) * height))
+                    if right <= left or bottom <= top:
+                        continue
+                    score = float(candidate.confidence())
+                    if not math.isfinite(score):
+                        raise VisionError("Invalid OCR confidence.")
                     boxes.append(
                         TextBox(
                             candidate.string(),
                             (left, top, right, bottom),
-                            float(candidate.confidence()),
+                            max(0.0, min(1.0, score)),
                         )
                     )
                 return sorted(boxes, key=lambda box: (box.bounds[1], box.bounds[0], box.text))

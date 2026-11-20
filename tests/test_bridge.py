@@ -6,7 +6,9 @@ import io
 import json
 import shutil
 import signal
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -16,7 +18,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from moyu_harmony_pilot.actions import ActionRegistry, Inspection
+from moyu_harmony_pilot.actions import ActionRegistry
 from moyu_harmony_pilot.bridge import BridgeConfig, BridgeError, BridgeWorker, HttpBridgeClient
 from moyu_harmony_pilot.bridge.client import _RejectRedirect
 from moyu_harmony_pilot.bridge.config import validate_configuration
@@ -187,26 +189,38 @@ def test_restart_recovers_unfinished_job_without_submission(bridge):
     assert restarted.counts["recovered"] == 1
 
 
-@pytest.mark.parametrize("stage", ["inspect", "submit"])
-def test_broker_cancellation_interrupts_active_stage(bridge, monkeypatch, stage):
+@pytest.mark.parametrize("stage", ["inspect", "submit", "confirm"])
+@pytest.mark.parametrize("cancellation", ["requested", "conflict", "gone", "expired"])
+def test_broker_cancellation_respects_submission_boundary(
+    bridge, monkeypatch, stage, cancellation
+):
     worker, broker, plugin, _, _, _ = bridge
     broker.jobs = [job_payload()]
-    broker.cancel = True
-    if stage == "inspect":
-
-        def inspect(ctx, params):
-            plugin.calls.append("inspect")
-            time.sleep(2)
-            return Inspection()
-
-        monkeypatch.setattr(plugin, "inspect", inspect)
+    if cancellation == "requested":
+        broker.cancel = True
+    elif cancellation == "expired":
+        broker.jobs[0]["leaseExpiresAt"] = timestamp(utc_now() + timedelta(seconds=0.25))
+        broker.failures["/bridge/v1/jobs/job_001/lease"] = [BridgeError("offline")] * 30
     else:
-        plugin.submit_hook = lambda: time.sleep(2)
+        status = 409 if cancellation == "conflict" else 410
+        broker.failures["/bridge/v1/jobs/job_001/lease"] = [
+            BridgeError("lease lost", status=status, retryable=False)
+        ]
+    operation = getattr(plugin, stage)
+
+    def delayed_operation(ctx, *args):
+        result = operation(ctx, *args)
+        time.sleep(0.4)
+        ctx.checkpoint()
+        return result
+
+    monkeypatch.setattr(plugin, stage, delayed_operation)
     started = time.monotonic()
     worker.run_once()
     assert time.monotonic() - started < 1.5
-    assert broker.receipts[0]["status"] == ("failed" if stage == "inspect" else "unknown")
-    assert ("submit" in plugin.calls) == (stage == "submit")
+    assert broker.receipts[0]["status"] == ("failed" if stage == "inspect" else "succeeded")
+    assert ("submit" in plugin.calls) == (stage != "inspect")
+    assert ("confirm" in plugin.calls) == (stage != "inspect")
     assert any(path.endswith("/lease") for path, _ in broker.calls)
 
 
@@ -272,6 +286,85 @@ def test_finishing_during_renewal_skips_heartbeat_and_stops_thread(bridge, monke
     heartbeat.assert_not_called()
 
 
+@pytest.mark.parametrize("error", [BridgeError("private", retryable=False), OSError("private")])
+def test_heartbeat_failure_keeps_healthy_lease(bridge, monkeypatch, caplog, error):
+    worker, broker, _, _, _, _ = bridge
+    heartbeat = Mock(side_effect=error)
+    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
+    monkeypatch.setattr(lease.finished, "wait", Mock(side_effect=[False, False, True]))
+    lease._loop()
+    assert heartbeat.call_count == 2
+    assert len([path for path, _ in broker.calls if path.endswith("/lease")]) == 2
+    assert not lease.lost.is_set()
+    assert not lease.cancelled()
+    assert "heartbeat failed" in caplog.text
+    assert "private" not in caplog.text
+
+
+def test_retryable_renewal_failure_retries_before_heartbeat(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    broker.failures["/bridge/v1/jobs/job_001/lease"] = [BridgeError("offline")]
+    heartbeat = Mock()
+    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
+    monkeypatch.setattr(lease.finished, "wait", Mock(side_effect=[False, False, True]))
+    lease._loop()
+    assert len(broker.calls) == 2
+    heartbeat.assert_called_once()
+    assert not lease.lost.is_set()
+
+
+def test_lease_exit_budget_covers_renewal_and_heartbeat(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, Mock())
+    thread = Mock()
+    monkeypatch.setattr(lease, "thread", thread)
+    with lease:
+        pass
+    assert lease.finished.is_set()
+    thread.join.assert_called_once_with(timeout=2 * worker.config.request_timeout + 1)
+
+
+def test_lease_exit_waits_for_inflight_heartbeat(bridge):
+    worker, broker, _, _, _, _ = bridge
+    started = threading.Event()
+    finished = threading.Event()
+
+    def heartbeat():
+        started.set()
+        time.sleep(0.1)
+        finished.set()
+
+    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
+    with lease:
+        assert started.wait(2)
+    assert finished.is_set()
+    assert not lease.thread.is_alive()
+
+
+def test_concurrent_heartbeats_share_one_health_update(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    post = broker.post
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_post(path, payload, *, timeout=None):
+        started.set()
+        assert release.wait(2)
+        return post(path, payload, timeout=timeout)
+
+    monkeypatch.setattr(broker, "post", slow_post)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(worker.heartbeat)
+        assert started.wait(2)
+        second = pool.submit(worker.heartbeat)
+        release.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+    assert len(broker.calls) == 1
+    assert health_status(worker.config)["healthy"]
+    assert not (worker.directory / "health.tmp").exists()
+
+
 def test_shutdown_during_renewal_wait_skips_request(bridge, monkeypatch):
     worker, broker, _, _, _, _ = bridge
     lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, Mock())
@@ -306,17 +399,140 @@ def test_late_renewal_does_not_revive_expired_lease(bridge, monkeypatch):
     assert lease.cancelled()
 
 
-def test_signal_shutdown_after_submit_records_unknown_and_restores_handlers(bridge):
+@pytest.mark.parametrize("stage", ["inspect", "submit", "confirm"])
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_signal_shutdown_respects_submission_boundary(bridge, monkeypatch, stage, signum):
     worker, broker, plugin, _, _, _ = bridge
-    original = signal.getsignal(signal.SIGTERM)
-    plugin.submit_hook = lambda: signal.raise_signal(signal.SIGTERM)
+    original = signal.getsignal(signum)
+    operation = getattr(plugin, stage)
+
+    def interrupted(ctx, *args):
+        result = operation(ctx, *args)
+        signal.raise_signal(signum)
+        time.sleep(0.15)
+        ctx.checkpoint()
+        return result
+
+    monkeypatch.setattr(plugin, stage, interrupted)
     broker.jobs = [job_payload()]
     worker.run()
     assert worker.stop.is_set()
-    assert broker.receipts[-1]["status"] == "unknown"
-    assert plugin.calls.count("submit") == 1
-    assert signal.getsignal(signal.SIGTERM) == original
+    assert broker.receipts[-1]["status"] == ("failed" if stage == "inspect" else "succeeded")
+    assert plugin.calls.count("submit") == (0 if stage == "inspect" else 1)
+    assert signal.getsignal(signum) == original
     assert len([path for path, _ in broker.calls if path.endswith("/claim")]) == 1
+
+
+def test_job_expiration_still_bounds_cancelled_submission(bridge):
+    worker, broker, plugin, _, _, _ = bridge
+    broker.jobs = [job_payload(expiresAt=timestamp(utc_now() + timedelta(seconds=0.25)))]
+
+    def submit():
+        signal.raise_signal(signal.SIGTERM)
+        time.sleep(2)
+
+    plugin.submit_hook = submit
+    started = time.monotonic()
+    worker.run()
+    assert time.monotonic() - started < 1.5
+    assert broker.receipts[0]["status"] == "unknown"
+    assert plugin.calls == ["inspect", "submit"]
+
+
+def test_idle_cycles_sample_telemetry_only_when_heartbeat_due(bridge):
+    worker, broker, _, device, transport, _ = bridge
+    worker.run_once()
+    transport.calls.clear()
+    worker.run_once()
+    assert not any("hidumper" in " ".join(args) for _, args, _ in transport.calls)
+    assert len([path for path, _ in broker.calls if path.endswith("/claim")]) == 2
+    worker.last_heartbeat -= worker.config.heartbeat_seconds
+    worker.run_once()
+    assert sum("hidumper" in " ".join(args) for _, args, _ in transport.calls) == 2
+    device.status = "Offline"
+    worker.run_once()
+    assert len([path for path, _ in broker.calls if path.endswith("/claim")]) == 3
+
+
+@pytest.mark.parametrize("claim_duration, expected_delay", [(15, 0), (2, 13), (0, 15)])
+def test_empty_claim_elapsed_time_counts_toward_poll_interval(
+    bridge, monkeypatch, claim_duration, expected_delay
+):
+    worker, broker, _, _, _, _ = bridge
+    clock = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    post = broker.post
+
+    def timed_post(path, payload, *, timeout=None):
+        if path.endswith("/claim"):
+            clock[0] += claim_duration
+        result = post(path, payload, timeout=timeout)
+        if path.endswith("/heartbeat"):
+            result["recommendedPollIntervalSeconds"] = 15
+        return result
+
+    monkeypatch.setattr(broker, "post", timed_post)
+    delays = []
+
+    def stop_after_wait(delay):
+        delays.append(delay)
+        worker.stop.set()
+
+    monkeypatch.setattr(worker.stop, "wait", stop_after_wait)
+    worker.run()
+    assert delays == [expected_delay]
+
+
+def test_pending_job_hint_uses_immediate_claim_and_empty_result_clears_hint(bridge):
+    worker, broker, _, _, _, _ = bridge
+    worker.config = replace(worker.config, wait_seconds=15)
+    broker.jobs = [job_payload()]
+    worker.run_once()
+    assert worker.has_pending_jobs
+    worker.run_once()
+    assert not worker.has_pending_jobs
+    worker.run_once()
+    claims = [payload for path, payload in broker.calls if path.endswith("/claim")]
+    assert [claim["waitSeconds"] for claim in claims] == [0, 0, 15]
+
+
+def test_pending_job_hint_clears_when_no_device_available(bridge):
+    worker, _, _, device, _, _ = bridge
+    worker.run_once()
+    worker.has_pending_jobs = True
+    device.status = "Offline"
+    worker.run_once()
+    assert not worker.has_pending_jobs
+
+
+def test_pending_job_hint_skips_poll_sleep(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    broker.jobs = [job_payload()]
+    delays = []
+
+    def stop_after_wait(delay):
+        delays.append(delay)
+        worker.stop.set()
+
+    monkeypatch.setattr(worker.stop, "wait", stop_after_wait)
+    worker.run()
+    assert delays == [0]
+    assert broker.receipts[0]["status"] == "succeeded"
+
+
+def test_failed_health_file_update_remains_due_for_retry(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "moyu_harmony_pilot.bridge.worker.os.replace", Mock(side_effect=OSError("failed"))
+        )
+        with pytest.raises(OSError):
+            worker.heartbeat()
+    assert worker.last_heartbeat == float("-inf")
+    worker.heartbeat()
+    assert len(broker.calls) == 2
+    assert health_status(worker.config)["healthy"]
+    assert not (worker.directory / "health.tmp").exists()
 
 
 def test_reconnect_backoff_resumes_and_exits_cleanly(bridge, monkeypatch):

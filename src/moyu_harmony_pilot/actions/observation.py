@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,12 +26,21 @@ def capture_screenshot(
 ) -> tuple[ScreenshotResult, CompactSnapshot | None]:
     if som:
         require_pillow()
-    with device.acquire_lock(wait_timeout=wait_lock):
+    with device.acquire_lock(wait_timeout=wait_lock), ExitStack() as cleanup:
         snapshot = None
+        destination = Path(output).expanduser()
+        capture_path = destination
         if som:
             _, snapshot = device.dump_ui_compact(display_id=display_id, timeout=timeout)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fd, filename = tempfile.mkstemp(
+                prefix=".som-capture-", suffix=destination.suffix, dir=destination.parent
+            )
+            capture_path = Path(filename)
+            cleanup.callback(capture_path.unlink, missing_ok=True)
+            os.close(fd)
         result = device.screenshot(
-            output,
+            capture_path,
             image_format=image_format,
             display_id=display_id,
             max_width=max_width,
@@ -46,5 +58,6 @@ def capture_screenshot(
                 Mark(element.ref, tuple(element.bounds.to_list())) for element in snapshot.elements
             ]
             annotate_som(result.path, marks, screen_size=snapshot.screen_size)
-            result = replace(result, size_bytes=result.path.stat().st_size)
+            result = replace(result, path=destination, size_bytes=result.path.stat().st_size)
+            os.replace(capture_path, destination)
     return result, snapshot

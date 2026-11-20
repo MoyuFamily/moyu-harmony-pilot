@@ -32,11 +32,13 @@ Each worker claims at most one job at a time. Devices retain independent physica
 
 Each configured device advertises its own explicit capabilities. External discovery filters entry points before importing plugin code. Local-only actions are rejected during configuration validation. Claim fields, action parameters, timestamps and lease deadlines are validated before execution.
 
-The worker renews leases in the background, sends busy heartbeats during long jobs and exposes cancellation to the shared action execution budget. A rejected, expired or canceled lease stops execution at the deadline/checkpoint boundary. Side-effecting submissions retain `unknown` when their result becomes uncertain.
+The worker renews leases in the background and sends busy heartbeats during long jobs. Heartbeat failures are logged independently of lease renewal. A rejected, expired or canceled lease stops preparation and inspection at the next deadline/checkpoint check. After the action ledger commits its `submitting` reservation, submission and confirmation can finish within their original budgets and the job expiration deadline. Execution failures and inconclusive confirmation produce `unknown`.
+
+Idle cycles refresh device connectivity and lock state. Battery and power telemetry are sampled when a heartbeat is due. Long-poll time counts toward the recommended polling interval, and pending-job hints trigger immediate claims. Heartbeat state and health-file updates are serialized. Worker shutdown allows both in-flight lease and heartbeat requests to finish.
 
 Job reservations and final receipts live in an owner-only SQLite outbox. Receipts are saved before HTTP completion, remain immutable during retries, and survive worker restarts. Unfinished jobs recover as `unknown`. Repeated jobs resend their recorded receipt. Completion conflicts (`409` or `410`) close local delivery while preserving the recorded result.
 
-`SIGTERM` and `SIGINT` stop claiming work, cancel the active task through the shared guard, finish local ledger/outbox handling and attempt final receipt delivery. Pending receipts are delivered on the next start. Network failures use capped exponential backoff with jitter. Authentication and protocol failures use a longer retry interval and sanitized stderr warnings.
+`SIGTERM` and `SIGINT` stop claiming work and request cancellation through the shared guard. An action with a committed `submitting` reservation reaches confirmation within its remaining budget. The worker then finishes local ledger/outbox handling and attempts final receipt delivery. Pending receipts are delivered on the next start. Network failures use capped exponential backoff with jitter. Authentication and protocol failures use a longer retry interval and sanitized stderr warnings.
 
 Keep the state directory across upgrades and restarts. The action ledger protects physical-device/action/idempotency-key identity across workers. The receipt outbox is scoped to broker URL and Bridge ID.
 

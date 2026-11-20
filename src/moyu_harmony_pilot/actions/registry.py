@@ -143,6 +143,8 @@ class ActionRegistry:
             for raw_path in paths:
                 if raw_path:
                     registry._load_directory(Path(raw_path).expanduser().resolve(), remote=remote)
+        except DeviceConfigurationError:
+            raise
         except (Exception, SystemExit) as exc:
             raise DeviceConfigurationError(
                 "Plugin discovery failed. Check trusted plugin metadata and configuration."

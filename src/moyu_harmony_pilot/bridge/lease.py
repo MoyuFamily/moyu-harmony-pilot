@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 
@@ -72,13 +73,19 @@ class LeaseKeeper:
                 return
             try:
                 self.renew()
-                if not self.cancelled():
-                    self.heartbeat()
             except BridgeError as exc:
                 if not exc.retryable:
                     self.lost.set()
             except Exception:
                 self.lost.set()
+            else:
+                if not self.cancelled():
+                    try:
+                        self.heartbeat()
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "Bridge heartbeat failed during lease maintenance."
+                        )
 
     def __enter__(self):
         self.thread.start()
@@ -86,4 +93,4 @@ class LeaseKeeper:
 
     def __exit__(self, exc_type, exc, traceback):
         self.finished.set()
-        self.thread.join(timeout=self.config.request_timeout + 1)
+        self.thread.join(timeout=2 * self.config.request_timeout + 1)

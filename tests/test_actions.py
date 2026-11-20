@@ -7,6 +7,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -233,6 +234,90 @@ def test_interruption_immediately_after_reservation_commit(execution, monkeypatc
     assert run_mutation(execution).status == "unknown"
 
 
+def test_cancellation_before_reservation_leaves_action_retriable(execution, tmp_path):
+    result = run_mutation(execution, cancelled=lambda: True)
+    assert result.error_code == "action_cancelled"
+    assert execution[2].calls == []
+    with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
+        assert db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+    assert run_mutation(execution).status == "succeeded"
+
+
+def test_cancellation_after_inspection_stops_before_reservation(execution, monkeypatch, tmp_path):
+    cancelled = threading.Event()
+    inspect = execution[2].inspect
+
+    def cancel_after_inspect(ctx, params):
+        result = inspect(ctx, params)
+        cancelled.set()
+        return result
+
+    monkeypatch.setattr(execution[2], "inspect", cancel_after_inspect)
+    result = run_mutation(execution, cancelled=cancelled.is_set)
+    assert result.error_code == "action_cancelled"
+    assert execution[2].calls == ["inspect"]
+    with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
+        assert db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("stage", ["reserve", "submit", "confirm"])
+def test_cancellation_after_reservation_finishes_confirmation(
+    execution, monkeypatch, tmp_path, stage
+):
+    cancelled = threading.Event()
+    if stage == "reserve":
+        reserve = ActionLedger.reserve
+
+        def cancel_after_commit(self, key):
+            reserve(self, key)
+            cancelled.set()
+
+        monkeypatch.setattr(ActionLedger, "reserve", cancel_after_commit)
+
+    def on_stage(current):
+        if current == stage:
+            cancelled.set()
+
+    plugin = execution[2]
+    confirm = plugin.confirm
+
+    def confirm_with_checkpoints(ctx, params):
+        ctx.checkpoint()
+        assert ctx.remaining_timeout > 0
+        return confirm(ctx, params)
+
+    monkeypatch.setattr(plugin, "confirm", confirm_with_checkpoints)
+    plugin.submit_hook = lambda: time.sleep(0.15)
+    assert run_mutation(
+        execution, cancelled=cancelled.is_set, on_stage=on_stage
+    ).status == "succeeded"
+    assert cancelled.is_set()
+    assert plugin.calls == ["inspect", "submit", "confirm"]
+    assert read_status(tmp_path) == "succeeded"
+    assert run_mutation(execution).status == "already_done"
+    assert plugin.calls.count("submit") == 1
+
+
+@pytest.mark.parametrize("stage", ["submit", "confirm"])
+def test_cancelled_submission_still_obeys_deadline(execution, monkeypatch, tmp_path, stage):
+    cancelled = threading.Event()
+    operation = getattr(execution[2], stage)
+
+    def expire(ctx, *args):
+        result = operation(ctx, *args)
+        cancelled.set()
+        time.sleep(2)
+        return result
+
+    monkeypatch.setattr(execution[2], stage, expire)
+    result = run_mutation(execution, cancelled=cancelled.is_set, timeout=0.2)
+    assert result.status == "unknown"
+    assert read_status(tmp_path) == "unknown"
+    assert run_mutation(execution).status == "unknown"
+    assert execution[2].calls.count("submit") == 1
+    assert ("confirm" in execution[2].calls) == (stage == "confirm")
+
+
 def test_process_death_during_submit_recovers_without_replay(execution, tmp_path):
     script = """
 import os
@@ -378,6 +463,49 @@ def test_registry_metadata_snapshot_duplicate_and_remote_allowlist(execution):
     assert (
         "bad" not in runner.registry.describe(plugin.spec.action_id)["params_schema"]["properties"]
     )
+
+
+def test_registry_examples_remain_tuples_and_isolated():
+    plugin = SampleMutation()
+    plugin.spec = replace(plugin.spec, examples=({"value": 1},))
+    registry = ActionRegistry()
+    registry.register(plugin)
+    plugin.spec.examples[0]["value"] = 2
+    _, spec = registry.get(plugin.spec.action_id)
+    assert spec.examples == ({"value": 1},)
+    spec.examples[0]["value"] = 3
+    assert registry.get(plugin.spec.action_id)[1].examples == ({"value": 1},)
+    assert registry.describe(plugin.spec.action_id)["examples"] == [{"value": 1}]
+
+
+@pytest.mark.parametrize(
+    "mode, message",
+    [("duplicate", "Duplicate action ID"), ("schema", "Parameters and metrics")],
+)
+def test_discovery_preserves_configuration_errors(monkeypatch, mode, message):
+    class Plugin(SampleMutation):
+        spec = replace(SampleMutation.spec, action_id="device.health")
+
+    if mode == "schema":
+        Plugin.spec = replace(Plugin.spec, params_schema={"type": "integer"})
+    entry = Mock()
+    entry.name = "device.health"
+    entry.value = "synthetic:Plugin"
+    entry.load.return_value = Plugin
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [entry])
+    with pytest.raises(DeviceConfigurationError, match=message):
+        ActionRegistry.discover(env={})
+
+
+def test_discovery_hides_uncontrolled_import_errors(monkeypatch):
+    entry = Mock()
+    entry.name = "example.failed"
+    entry.value = "synthetic:Plugin"
+    entry.load.side_effect = RuntimeError("PRIVATE_IMPORT_DETAILS")
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [entry])
+    with pytest.raises(DeviceConfigurationError, match="Plugin discovery failed") as error:
+        ActionRegistry.discover(env={})
+    assert "PRIVATE_IMPORT_DETAILS" not in str(error.value)
 
 
 def test_legacy_action_spec_defaults_to_api_v1(execution):

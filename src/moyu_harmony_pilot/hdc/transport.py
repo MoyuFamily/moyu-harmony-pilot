@@ -215,7 +215,10 @@ class SubprocessHdcTransport:
         except BaseException:
             # An enclosing action deadline or SIGINT must also reap the active hdc process.
             _terminate_process_tree(proc)
-            proc.communicate()
+            try:
+                proc.communicate(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
             raise
 
         duration_ms = int((time.monotonic() - started) * 1000)

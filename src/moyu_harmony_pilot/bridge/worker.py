@@ -99,10 +99,12 @@ class BridgeWorker:
         self.stop = threading.Event()
         self.poll_seconds = config.poll_seconds
         self.last_heartbeat = float("-inf")
+        self.has_pending_jobs = False
+        self._heartbeat_lock = threading.Lock()
         self.inventory: list[dict] = []
         self.counts = {"claimed": 0, "completed": 0, "recovered": 0, "errors": 0}
 
-    def _inventory(self) -> list[dict]:
+    def _inventory(self, *, telemetry: bool = True) -> list[dict]:
         try:
             targets = {
                 target.serial: target
@@ -127,7 +129,7 @@ class BridgeWorker:
                 "busy": device.is_busy() or alias in blocked,
                 "capabilities": list(self.config.allowed_actions[alias]),
             }
-            if state == ConnectionState.ONLINE and not row["busy"]:
+            if telemetry and state == ConnectionState.ONLINE and not row["busy"]:
                 try:
                     with device.acquire_lock():
                         health = device.get_health(timeout=self.config.request_timeout)
@@ -145,6 +147,10 @@ class BridgeWorker:
         return rows
 
     def heartbeat(self, *, active_alias: str | None = None) -> None:
+        with self._heartbeat_lock:
+            self._heartbeat(active_alias=active_alias)
+
+    def _heartbeat(self, *, active_alias: str | None = None) -> None:
         if time.monotonic() - self.last_heartbeat < self.config.heartbeat_seconds:
             return
         rows = [dict(row) for row in self.inventory]
@@ -170,12 +176,15 @@ class BridgeWorker:
         if response.get("ok") is not True:
             raise BridgeProtocolError("Broker rejected heartbeat.")
         parse_time(response.get("serverTime"))
+        pending = response.get("hasPendingJobs", False)
+        if type(pending) is not bool:
+            raise BridgeProtocolError("Invalid heartbeat pending-job flag.")
         self.poll_seconds = number(
             response.get("recommendedPollIntervalSeconds", self.poll_seconds),
             minimum=0.1,
             maximum=300,
         )
-        self.last_heartbeat = time.monotonic()
+        self.has_pending_jobs = pending
         temporary = self.directory / "health.tmp"
         write_secure_text(
             temporary,
@@ -190,6 +199,7 @@ class BridgeWorker:
         )
 
         os.replace(temporary, self.directory / "health.json")
+        self.last_heartbeat = time.monotonic()
 
     def flush_receipts(self) -> None:
         for job_id, payload in self.store.pending():
@@ -269,7 +279,9 @@ class BridgeWorker:
                         job.params,
                         remote=True,
                         idempotency_key=job.idempotency_key,
-                        timeout=job.timeout_seconds,
+                        timeout=min(
+                            job.timeout_seconds, (job.expires_at - utc_now()).total_seconds()
+                        ),
                         cancelled=lease.cancelled,
                         on_stage=lease.set_stage,
                     )
@@ -289,7 +301,9 @@ class BridgeWorker:
         self.flush_receipts()
         if self.stop.is_set():
             return dict(self.counts)
-        self.inventory = self._inventory()
+        self.inventory = self._inventory(
+            telemetry=time.monotonic() - self.last_heartbeat >= self.config.heartbeat_seconds
+        )
         self.heartbeat()
         available = [
             {"deviceAlias": row["deviceAlias"], "capabilities": row["capabilities"]}
@@ -297,24 +311,28 @@ class BridgeWorker:
             if row["connectionState"] == "online" and not row["busy"] and row["capabilities"]
         ]
         if available and not self.stop.is_set():
+            wait_seconds = 0 if self.has_pending_jobs else self.config.wait_seconds
             reply = self.client.post(
                 "/bridge/v1/jobs/claim",
                 {
                     "bridgeId": self.config.bridge_id,
                     "maxJobs": 1,
-                    "waitSeconds": self.config.wait_seconds,
+                    "waitSeconds": wait_seconds,
                     "availableDevices": available,
                 },
-                timeout=self.config.wait_seconds + self.config.request_timeout,
+                timeout=wait_seconds + self.config.request_timeout,
             )
             jobs = reply.get("jobs")
             if not isinstance(jobs, list) or len(jobs) > 1:
                 raise BridgeProtocolError("Broker claim must contain at most one job.")
+            self.has_pending_jobs = bool(jobs)
             for payload in jobs:
                 job = Job.parse(payload)
                 self.counts["claimed"] += 1
                 self._execute(job)
             self.flush_receipts()
+        else:
+            self.has_pending_jobs = False
         return dict(self.counts)
 
     def run_once(self) -> dict:
@@ -337,10 +355,13 @@ class BridgeWorker:
         failures = 0
         with self.lock, self._signals():
             while not self.stop.is_set():
+                started = time.monotonic()
                 try:
                     self._cycle()
                     failures = 0
-                    delay = self.poll_seconds
+                    delay = max(0.0, self.poll_seconds - (time.monotonic() - started))
+                    if self.has_pending_jobs:
+                        delay = 0.0
                 except Exception as exc:
                     self.counts["errors"] += 1
                     failures = min(failures + 1, 6)

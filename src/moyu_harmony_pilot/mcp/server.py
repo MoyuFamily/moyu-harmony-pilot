@@ -13,11 +13,14 @@ from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ActionRegistry
 from moyu_harmony_pilot.device import (
     DeviceConfigurationError,
+    DeviceError,
     DeviceRegistry,
     check_config_permissions,
 )
-from moyu_harmony_pilot.hdc import HdcClient
+from moyu_harmony_pilot.hdc import HdcClient, HdcError
 from moyu_harmony_pilot.mcp.adapter import PilotTools
+from moyu_harmony_pilot.ui import UiError
+from moyu_harmony_pilot.vision import VisionError
 
 
 def create_server(adapter: PilotTools):
@@ -59,14 +62,19 @@ def create_server(adapter: PilotTools):
             payload = {"ok": ok, "data": data, "error": error}
             encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
         except Exception as exc:
+            controlled = isinstance(exc, (DeviceError, UiError, HdcError, VisionError))
+            message = str(exc) if controlled else "Tool execution stopped."
+            if isinstance(exc, HdcError) and exc.result is not None:
+                # Driver messages can embed raw subprocess output.
+                message = f"hdc operation failed ({exc.code})."
             payload = {
                 "ok": False,
                 "data": None,
                 "error": {
-                    "code": getattr(exc, "code", "internal_error"),
-                    "message": "Tool execution stopped.",
-                    "hint": getattr(exc, "hint", None),
-                    "retryable": False,
+                    "code": exc.code if controlled else "internal_error",
+                    "message": message,
+                    "hint": exc.hint if controlled else None,
+                    "retryable": bool(getattr(exc, "retryable", False)),
                 },
             }
             encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)

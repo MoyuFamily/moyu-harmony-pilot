@@ -197,6 +197,9 @@ class ActionRunner:
             if prior is not None:
                 return prior
             raise
+        # The durable reservation is the cancellation boundary. Finish confirmation
+        # within the original deadline even if shutdown or lease loss arrives now.
+        ctx.cancelled = None
         outcome = _failure(ActionBudgetExceeded(), submitted=True)
         try:
             if inspection.status == "already_done":

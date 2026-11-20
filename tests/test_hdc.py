@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -43,11 +44,15 @@ def _make_executable_script(path: Path, body: str) -> Path:
     return path
 
 
-def test_external_interruption_reaps_hdc_process(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("cleanup_times_out", [False, True])
+def test_external_interruption_reaps_hdc_process(
+    tmp_path: Path, monkeypatch, cleanup_times_out
+) -> None:
     script = _make_executable_script(tmp_path / "fake_hdc", "print('fake')")
     transport = SubprocessHdcTransport(hdc_path=script)
     process = Mock(pid=123456)
-    process.communicate.side_effect = [KeyboardInterrupt(), ("", "")]
+    cleanup = subprocess.TimeoutExpired("fake_hdc", 2) if cleanup_times_out else ("", "")
+    process.communicate.side_effect = [KeyboardInterrupt(), cleanup]
     popen = Mock(return_value=process)
     killpg = Mock()
     monkeypatch.setattr("moyu_harmony_pilot.hdc.transport.subprocess.Popen", popen)
@@ -56,6 +61,7 @@ def test_external_interruption_reaps_hdc_process(tmp_path: Path, monkeypatch) ->
         transport.execute(["-v"])
     killpg.assert_called_once_with(process.pid, signal.SIGKILL)
     assert process.communicate.call_count == 2
+    process.communicate.assert_called_with(timeout=2.0)
 
 
 def test_mask_serial_redacts_hardware_identifiers() -> None:
