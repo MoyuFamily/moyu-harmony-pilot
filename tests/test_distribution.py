@@ -18,6 +18,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path):
         "pyproject.toml",
         "MANIFEST.in",
         "README.md",
+        "CHANGELOG.md",
         "LICENSE",
         "SECURITY.md",
         "AGENTS.md",
@@ -43,6 +44,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path):
     with tarfile.open(next(artifacts.glob("*.tar.gz"))) as archive:
         names = {"/".join(name.split("/")[1:]) for name in archive.getnames()}
         required = {
+            "CHANGELOG.md",
             "tests/__init__.py",
             "tests/fakes.py",
             "tests/fixtures/harmony_61_home_layout.json",

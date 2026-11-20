@@ -7,8 +7,8 @@
 ## 1. 兼容性说明
 
 - 动作实现 **Action API v1**；
-- 包元数据声明支持 **Python 3.11+** 及 `moyu-harmony-pilot>=0.1.0.dev1,<0.2`；
-- `requirements-test.txt` 固定了 CI 审阅通过的 Pilot 开发版本；
+- 包元数据声明支持 **Python 3.11+** 及 `moyu-harmony-pilot>=0.1.0,<0.2`；
+- `requirements-test.txt` 固定了 CI 审阅通过的 Pilot 发布版本（`v0.1.0`）；
 - `.github/workflows/contract.yml` 在 macOS / Linux × Python 3.11 / 3.12 矩阵下运行离线契约测试。
 
 改造成自己的插件后，请以实际跑通的 Pilot 版本与宿主机测试记录为准，及时更新依赖版本范围。

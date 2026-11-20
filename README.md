@@ -50,7 +50,8 @@ chmod 600 devices.local.yaml
 ### 入门与设计
 - **[需求与架构设计](docs/requirements.md)** — 项目定位、非目标边界、分层架构、插件模型、Agent 友好契约与安全红线。
 - **[本地环境与真机准备](docs/device-setup.md)** — macOS / Linux 安装官方 `hdc`、Python 环境搭建、真机开启调试、只读验证与 USB 排障。
-- **[后续迭代路线图](docs/roadmap.md)** — M4 闭环后的演进优先级，涵盖账本运维对账、`0.1.0` 发版、多机并发 Bridge、驱动加固与插件开发体验。
+- **[后续迭代路线图](docs/roadmap.md)** — M4 闭环后的演进优先级，涵盖账本运维对账、多版本真机适配、多机并发 Bridge、驱动加固与插件开发体验。
+- **[更新日志](CHANGELOG.md)** — 各版本发布记录、已验证环境与已知边界。
 
 ### 插件与扩展
 - **[Action 插件与本地执行](docs/actions.md)** — 插件发现机制、参数与回执 Schema、执行预算、SQLite 幂等账本、视觉标注/OCR 与受控交互。

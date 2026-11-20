@@ -1,6 +1,6 @@
 # Moyu Harmony Pilot — 后续迭代路线图
 
-> **文档状态**：活文档（基于 `0.1.0.dev1`，M0–M3 仓库实现与 M4 仓外应用侧端到端集成已完成）<br>
+> **文档状态**：活文档（基于 `0.1.0`，M0–M3 仓库实现与 M4 仓外应用侧端到端集成已完成）<br>
 > **目标平台**：HarmonyOS NEXT（HarmonyOS 5 / 6+，API 12+）物理设备<br>
 > **演进原则**：所有迭代均严格遵守 [requirements.md](requirements.md) 与 [AGENTS.md](../AGENTS.md) 确立的硬边界——仅使用官方工具链、核心零重依赖、单向分层 DAG、Fail-Closed 安全护栏、机器优先 CLI 契约，且不引入 Android/ADB 逻辑、私有商业业务脚本或任意 shell 透传能力。
 
@@ -11,7 +11,7 @@
 | 优先级 | 主题 | 核心目标 | 涉及模块 |
 | :--- | :--- | :--- | :--- |
 | **P0** | 账本运维与 `unknown` 对账核销 | 补齐幂等异常终态的只读对账、人工结案与历史裁剪闭环 | `actions`, `bridge`, `cli` |
-| **P0** | 多版本真机验收与 `0.1.0` 正式发版 | 冻结协议 v1.0、补齐类型检查、多版本兼容 Fixture 与发布流水线 | `device`, `ui`, CI/发版 |
+| **P0** | 多版本真机兼容、类型检查与发布自动化 | 冻结协议 v1.0、补齐 `mypy`/`py.typed`、跨版本兼容 Fixture 与 Tag 自动发版 | `device`, `ui`, CI/发版 |
 | **P1** | 单宿主机多设备并发与 Bridge 运维增强 | 突破单 worker `maxJobs=1` 限制，完善心跳元信息、TLS/密钥轮换与残留清扫 | `bridge`, `actions`, `hdc` |
 | **P1** | 底层驱动健壮性补全 | 完善 `wait_for` 预算透传、应用/Want 控制、无线 `hdc` 辅助与传输层演进评估 | `hdc`, `ui`, `device` |
 | **P2** | AI Agent 本地探索与视觉能力升级 | 扩展 `--local-lab` 安全交互原语、MCP 图片/OCR 观测与敏感屏/弹窗规则精度 | `actions`, `mcp`, `vision`, `ui` |
@@ -21,7 +21,7 @@
 
 ---
 
-## 2. P0 近期高优先：补齐生产运维闭环与 `0.1.0` 正式发版
+## 2. P0 近期高优先：补齐生产运维闭环与发布工程化
 
 ### 2.1 账本运维与 `unknown` 只读对账/核销闭环
 
@@ -39,18 +39,18 @@
 - **验收标准**：
   - 离线单测覆盖 `submitting` 崩溃恢复、只读对账收敛、人工核销防误用、裁剪不误删未决记录，以及 `stdout` 纯 JSON 输出契约。
 
-### 2.2 多版本真机验收与 `0.1.0` 正式发版
+### 2.2 多版本真机兼容、类型检查与发布自动化
 
 - **现状与缺口**：
-  - 当前版本为 `0.1.0.dev1`（Pre-Alpha），遥测解析目前主要在 HarmonyOS 6.1 / API 23 真机完成实测验证；
-  - CI 尚未集成静态类型检查（`mypy` / `pyright`），尚未提供 `py.typed` 标记与自动化发版校验流程；
+  - `0.1.0` 首发版遥测解析目前主要在 HarmonyOS 6.1 / API 23 真机完成实测验证；
+  - CI 尚未集成静态类型检查（`mypy` / `pyright`），尚未提供 `py.typed` 标记与自动化 Tag 发布流水线；
   - [docs/bridge-protocol.md](bridge-protocol.md) 仍处于 `v1 Draft` 状态。
 - **规划交付项**：
   1. **跨版本与多形态兼容矩阵**：补充 HarmonyOS 5.x / 6.x 及平板/折叠屏多 `display_id` 设备的脱敏 `hidumper`（`BatteryService`、`PowerManagerService`、`WindowManagerService`）和 `dumpLayout` Fixture，验证解析容错；
   2. **SDK 类型契约**：在 `src/moyu_harmony_pilot/` 添加 `py.typed`，在 `[project.optional-dependencies].dev` 与 `.github/workflows/ci.yml` 中接入严格静态类型检查；
-  3. **协议冻结与发版工程化**：将 Pull Bridge 协议冻结为 `v1.0`，补充 `CHANGELOG.md`、真机验收 Checklist（覆盖只读、受控副作用、断网重连、服务优雅退出）以及 Tag 触发的构建与校验和发布流程。
+  3. **协议冻结与发版工程化**：将 Pull Bridge 协议冻结为 `v1.0`，补充真机验收 Checklist（覆盖只读、受控副作用、断网重连、服务优雅退出）以及 Tag 触发的自动构建与校验和发布工作流。
 - **验收标准**：
-  - macOS / Linux × Python 3.11 / 3.12 离线 CI（含类型检查与分发包构建测试）全绿，至少完成一轮目标真机完整验收后发布 `0.1.0`。
+  - macOS / Linux × Python 3.11 / 3.12 离线 CI（含类型检查与分发包构建测试）全绿，后续 `0.1.x` / `0.2.0` 发版实现一键可复现构建。
 
 ---
 

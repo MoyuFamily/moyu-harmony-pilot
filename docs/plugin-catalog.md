@@ -10,7 +10,7 @@
 
 | 动作 ID | 来源与部署方式 | Pilot 版本要求 | 离线契约覆盖 |
 | :--- | :--- | :--- | :--- |
-| `example.battery_check` | [独立插件模板](../examples/plugin-template/README.md)，通过 Python 包 entry point 安装 | `>=0.1.0.dev1,<0.2` | wheel 安装发现、参数校验、远程白名单、只读设备调用 |
+| `example.battery_check` | [独立插件模板](../examples/plugin-template/README.md)，通过 Python 包 entry point 安装 | `>=0.1.0,<0.2` | wheel 安装发现、参数校验、远程白名单、只读设备调用 |
 | `example.health_check` | [Bridge 目录示例](../examples/bridge/plugins/health_check.py)，目录 + `actions.json` | 当前检出版本，API v1 | Fake 设备通过原生 Bridge 与本地 HTTP Broker 端到端联调 |
 | `example.ui_summary` | [本地目录示例](../examples/actions/ui_summary.py)，目录 + `actions.json` | 当前检出版本，API v1 | Fake 设备发现、本地执行与有界紧凑结果 |
 
