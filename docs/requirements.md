@@ -1,6 +1,6 @@
 # Moyu Harmony Pilot — 需求与架构设计文档
 
-> **文档状态**：v1，M0–M3 仓库实现已落地，真机验收按设备环境执行<br>
+> **文档状态**：v1，M0–M3 仓库实现与 M4 仓外应用侧端到端集成已落地，后续演进见 [roadmap.md](roadmap.md)<br>
 > **目标平台**：HarmonyOS NEXT（HarmonyOS 5 / 6+，API 12+）物理设备  
 > **运行宿主机**：macOS（Apple Silicon / Intel）、Linux（x86_64，兼容具备官方 `hdc` 的宿主环境）  
 > **开发语言**：Python 3.11+  
@@ -317,3 +317,5 @@ hdc (仅依赖 Python 标准库)
 | **M2（插件框架、自描述与视觉兜底）** | `actions` 契约、`plugins list / describe` 自描述 Schema、外部插件发现、SQLite 幂等防重账本、内置系统动作 + 脱敏示例插件、`vision` OCR 抽象（macOS Vision 适配与可选 `--som` 标注） | 外部独立目录挂载插件可零侵入运行；幂等防重、差分反馈、超时 `unknown` 与过温保护单测全覆盖 |
 | **M3（Pull Bridge、可选 MCP 与 Skill）** | `bridge` 客户端（严格对齐 [bridge-protocol.md](bridge-protocol.md)）、`serve` 守护命令、`launchd`/`systemd` 示例、协议兼容性测试夹具、可选 `[mcp]` 薄适配层（Safe / Local Lab 双模护栏）与 `skills/harmony-pilot/SKILL.md` | 离线模拟 Broker 与 MCP 护栏端到端测试全绿（含断网重连、租约过期、幂等重传、步数/敏感页熔断与优雅退出） |
 | **M4（应用侧集成 — 在本仓之外）** | 由任意外部调度系统或控制面按 [bridge-protocol.md](bridge-protocol.md) 实现服务端 Broker，并挂载独立私有或第三方插件完成端到端业务闭环 | 不改动 `moyu-harmony-pilot` 核心代码即可接入任意兼容服务端与外部插件 |
+
+> M0–M4 里程碑已全部闭环，后续迭代方向、优先级排期与验收标准详见 [docs/roadmap.md](roadmap.md)。

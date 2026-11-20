@@ -1,83 +1,55 @@
-# Plugin directory and maintenance
+# 插件目录与维护指南
 
-Pilot maintains the action contract, generic examples and compatibility tooling.
-External maintainers own their plugin source, package releases and business logic.
-This directory records discovery and deployment information that users can review
-before installing a plugin on their Pilot host.
+`moyu-harmony-pilot` 主仓库只维护动作契约、通用示例与兼容性测试工具；具体的第三方业务插件由各自维护者在独立仓库中开发、打包与发布。本文用于汇总官方通用示例与社区插件的兼容信息，方便宿主机运维者在安装前完成评审。
 
-## Available examples
+---
 
-The following examples are maintained by MoyuFamily under the repository's MIT
-license. All implement action API v1 and run in Pilot's offline CI on macOS/Linux
-with Python 3.11/3.12. Their tested Pilot revision is the commit of the CI run.
+## 1. 仓库内置与官方通用示例
 
-| Action | Source and deployment | Pilot requirement | Contract coverage |
-| --- | --- | --- | --- |
-| `example.battery_check` | [Standalone package template](../examples/plugin-template/README.md), installed through its entry point | `>=0.1.0.dev1,<0.2` | Built wheel discovery, parameter validation, remote allowlist and read-only device calls |
-| `example.health_check` | [Bridge example](../examples/bridge/plugins/health_check.py), directory with `actions.json` | Current checkout, API v1 | Fake-device execution through the native Bridge and local HTTP Broker |
-| `example.ui_summary` | [Local example](../examples/actions/ui_summary.py), directory with `actions.json` | Current checkout, API v1 | Fake-device discovery, local execution and compact results |
+以下示例均由 MoyuFamily 在本仓库 MIT 协议下维护，全部实现 Action API v1，并在 Pilot 离线 CI（macOS / Linux，Python 3.11 / 3.12）中持续验证：
 
-The package template contains a separate pinned Pilot revision for its standalone
-CI. Its dependency range declares the intended release compatibility, and each
-successful CI run records a tested revision. Device and application acceptance is
-recorded separately by plugin maintainers.
+| 动作 ID | 来源与部署方式 | Pilot 版本要求 | 离线契约覆盖 |
+| :--- | :--- | :--- | :--- |
+| `example.battery_check` | [独立插件模板](../examples/plugin-template/README.md)，通过 Python 包 entry point 安装 | `>=0.1.0.dev1,<0.2` | wheel 安装发现、参数校验、远程白名单、只读设备调用 |
+| `example.health_check` | [Bridge 目录示例](../examples/bridge/plugins/health_check.py)，目录 + `actions.json` | 当前检出版本，API v1 | Fake 设备通过原生 Bridge 与本地 HTTP Broker 端到端联调 |
+| `example.ui_summary` | [本地目录示例](../examples/actions/ui_summary.py)，目录 + `actions.json` | 当前检出版本，API v1 | Fake 设备发现、本地执行与有界紧凑结果 |
 
-## Register a community plugin
+> 注：独立插件模板的独立 CI 会固定测试指定的 Pilot 提交版本，同时在包依赖中声明目标兼容区间；真机与目标 App 的业务验收由各插件维护者自行记录。
 
-Submit a PR adding an entry to this document with the following information.
+---
 
-- Plugin name, distribution name, action IDs and a concise purpose.
-- Source repository, installation instructions and maintainer contact.
-- License and release tag or full revision used for installation.
-- Action API version, Pilot dependency range, Python and host requirements.
-- Side-effect classification and any local-only actions.
-- Links to offline contract results for each claimed Pilot version.
-- Device/application acceptance status, including versions tested and known limits.
+## 2. 登记社区插件
 
-Directory reviews check that this information is complete and matches the plugin's
-declarations. The deployment owner reviews the code and dependencies before
-installation, because plugins execute with the Pilot process's permissions.
-Business implementations remain in their external repositories.
+欢迎外部开源插件通过提交 PR 将自身条目登记到本目录。登记信息需包含：
 
-## Develop and validate
+- 插件名称、PyPI / 分发包名、提供的动作 ID 列表及简短用途说明；
+- 源码仓库地址、安装方式与维护者联系方式；
+- 开源协议及推荐安装的发布 Tag 或完整 Commit SHA；
+- Action API 版本、支持的 Pilot 版本范围、Python 与宿主机平台要求；
+- 副作用分类（`readonly` / `mutating`）以及是否包含 `local_only` 动作；
+- 对应各宣称支持 Pilot 版本的离线契约测试结果链接；
+- 真机 / 目标应用验收情况（含已测系统版本与已知限制）。
 
-Start from the [plugin template](../examples/plugin-template/README.md) and use the
-[action development contract](actions.md). The template's `python -m tests` command
-checks the installed entry point and fails if required tests skip or fail. Its
-synthetic mutation scenarios provide patterns for testing durable reservation,
-confirmed completion and uncertain results. Adapt those cases to the real plugin
-and its offline device fixtures.
+目录评审会核对登记信息是否完整且与插件实际声明一致。由于插件代码运行在 Pilot 进程权限下，宿主机管理员在安装前仍须自行审阅源码与依赖。具体业务插件代码不进入主仓库。
 
-Keep `actions.json` as an action-to-file/class mapping for directory plugins.
-Package plugins use the standard `moyu_harmony_pilot.actions` entry-point group.
-Compatibility metadata lives in `ActionSpec` and the package's `pyproject.toml`,
-as described in the action guide. Directory plugins document their package and
-Python requirements beside the manifest.
+---
 
-Before expanding a supported Pilot version range, run the plugin's contracts
-against that release or development revision. A release record should retain the
-plugin revision, Pilot revision, host/Python matrix and test result links.
+## 3. 开发与兼容性验证
 
-## Deploy, update and retire
+1. 从 [独立插件模板](../examples/plugin-template/README.md) 起步，并对照 [Action 插件开发指南](actions.md) 定义契约；
+2. 使用模板中的 `python -m tests` 校验已安装的 entry point（任何测试失败、被跳过或空套件都会使校验不通过），并参考模板中的有副作用测试场景补充针对自家业务和脱敏布局 Fixture 的离线测试；
+3. 目录式插件保持 `actions.json` 映射清晰并在同目录文档写明依赖要求；包形式插件通过 `moyu_harmony_pilot.actions` entry point 分组注册，并在 `ActionSpec` 与 `pyproject.toml` 中明确声明版本；
+4. 扩大支持的 Pilot 版本范围前，请先针对新版本或固定开发提交跑通契约测试，并留存插件版本、Pilot 版本、运行矩阵与测试链接。
 
-1. Install a reviewed plugin release into the service's Python environment, or
-   deploy its reviewed directory revision and configure `plugin_paths`.
-2. Run `plugins describe` for package or environment-discovered plugins. For a
-   Bridge deployment, run `serve --check` using its private configuration and
-   review the exported action IDs, API versions and schemas.
-3. Add the selected actions to the target devices' allowlists. Restart the
-   service to load the installed code and configuration.
-4. During upgrades, let active work complete, preserve the shared state directory
-   and run the contract suite against the new plugin/Pilot pair. Changes to action
-   `version` or parameters affect existing idempotency keys. Reconcile outstanding
-   `unknown` work before choosing new keys.
-5. To roll back, restore the previous package or directory revision together with
-   its configuration, retain the ledger and re-run preflight.
-6. To retire a plugin, remove its remote authorization, let active work settle,
-   restart the service, and remove its installed package or discovery path. Retain
-   the ledger according to the deployment's state retention policy. Update its
-   directory entry with maintenance status and a replacement when available.
+---
 
-Repository tags or fixed revisions identify source deployments. Version-pinned
-packages and wheel hashes can identify release deployments. Pilot's package
-metadata and tests remain independent of community plugins listed here.
+## 4. 上线、升级、回滚与下线流程
+
+1. **安装部署**：在服务使用的 Python 虚拟环境中安装经审阅的插件版本（或部署固定版本的目录并在 Bridge 配置 `plugin_paths`）。
+2. **契约预检**：本地模式运行 `harmony-pilot plugins describe <action_id> --json`；Bridge 模式运行 `harmony-pilot serve --config <bridge.local.json> --check --json`，核对导出的动作 ID、API 版本与参数/指标 Schema。
+3. **白名单放行**：将目标动作加入对应设备的 `allowed_actions`，重启服务使新代码与配置生效。
+4. **平滑升级**：等待在途任务结束后再切换版本，**务必保留共享的 `state_dir`**，并确认新版本组合已通过离线契约测试。若修改了动作 `version` 或参数结构，复用旧幂等键会触发校验失败，请先核对处理遗留的 `unknown` 记录。
+5. **版本回滚**：切回上一版插件包/目录及对应配置，保留账本目录，重新运行 `--check` 后重启服务。
+6. **插件下线**：先从远程白名单移除授权，等待在途任务收尾并重启服务，再卸载插件包或移出发现目录；按站点保留策略留存历史账本，并及时更新本目录中的维护状态或替代方案。
+
+> 建议：源码部署用固定 Tag 或 Commit SHA 锁定版本，包部署建议固定版本号与 wheel 校验和。主仓库的包元数据与测试始终保持与外部社区插件解耦。

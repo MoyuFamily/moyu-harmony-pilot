@@ -66,3 +66,6 @@ hdc        (L1: 仅依赖标准库 — 官方 hdc CLI 封装与文件收发)
 ### 零敏感信息自检
 - 严禁提交真实设备串号、Token、`.env`、`devices.local.*`、真机截图、原始布局 dump 或私有插件代码。
 - 提交前检查 `git status` 与 `git diff`，确保无临时诊断文件与敏感字面量泄漏。
+
+### 文档语言与行文约定
+- 面向人类读者的文档（`README.md`、`SECURITY.md`、`docs/`、`examples/*/README.md`）统一以**清晰、自然、便于扫读的中文**为主，注重结构层次与实用性；机器/Agent 专用说明（如 `skills/harmony-pilot/SKILL.md`）及代码标识符、JSON Schema 契约保持既有约定。

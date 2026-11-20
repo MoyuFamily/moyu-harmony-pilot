@@ -1,16 +1,30 @@
-# Running the Pull Bridge
+# Pull Bridge 守护进程运行指南
 
-For a host setup walkthrough and an external action example, follow [Cross-machine Integration](remote-integration.md).
+如果你正在从零搭建跨机器接入环境，建议先配合阅读 [跨机器接入与 Pilot 宿主机交付](remote-integration.md)。本文重点说明 `harmony-pilot serve` 的配置规则、运行模式、容错恢复机制与常驻服务部署。
 
-## Configuration
+---
 
-Copy `bridge.example.json` to `bridge.local.json` and edit the broker URL, configured aliases and capabilities. Set file mode `0600` on the Bridge config, device mapping and token file. Relative paths resolve against the Bridge config directory.
+## 1. 配置准备
 
-Credentials load from `HARMONY_PILOT_BRIDGE_TOKEN` or the configured `token_env` name. If the environment value is empty, `token_file` supplies the credential from an owner-only file. Keep runtime files outside version control.
+先复制示例配置，填入 Broker 地址、设备别名与白名单能力，并收紧私有文件权限：
 
-Set `plugin_paths` to an array of external plugin directories containing `actions.json`. Paths resolve against the Bridge config directory, including when a service has a different working directory. An explicit array replaces `HARMONY_PILOT_PLUGIN_PATHS` for this worker. An empty array disables directory discovery. Omitting the field preserves environment-based discovery. Installed Python entry points remain available in every case, subject to the action allowlist.
+```bash
+cp bridge.example.json bridge.local.json
+chmod 600 bridge.local.json devices.local.yaml
+```
 
-The broker must implement protocol v1. HTTPS uses certificate validation and rejects redirects. Explicit `http://127.0.0.1` and `http://localhost` endpoints support local integration.
+### 关键配置规则
+
+- **路径解析**：`devices_config`、`state_dir`、`token_file`、`plugin_paths` 中的相对路径，均**相对于 Bridge 配置文件所在目录**解析，避免服务工作目录变化导致找不到文件。
+- **凭据加载**：优先读取环境变量 `HARMONY_PILOT_BRIDGE_TOKEN`（或自定义的 `token_env`）；环境变量为空时，从权限为 `0600` 的 `token_file` 读取。切勿将运行配置和凭据提交到版本库。
+- **插件目录（`plugin_paths`）**：填写包含 `actions.json` 的外部插件目录数组。显式配置后会覆盖当前进程的 `HARMONY_PILOT_PLUGIN_PATHS` 环境变量（配置为空数组 `[]` 表示禁用目录发现）；省略该字段则沿用环境变量。无论如何配置，已安装 Python 包的 entry point 仍会参与发现，并统一受设备白名单限制。
+- **传输安全**：远端 Broker 必须使用经过证书校验的 `HTTPS`，且拒绝 HTTP 重定向；本地联调仅显式允许 `http://127.0.0.1` 与 `http://localhost`。
+
+---
+
+## 2. 运行模式一览
+
+`harmony-pilot serve` 提供 5 种运行方式，其中 4 个模式开关互斥：
 
 ```bash
 harmony-pilot serve --config bridge.local.json --check --json
@@ -20,32 +34,37 @@ harmony-pilot serve --config bridge.local.json --json
 harmony-pilot serve --config bridge.local.json --health --json
 ```
 
-`--check` validates private configuration, alias mappings and allowlisted plugin metadata offline. Its JSON data includes `protocol_version`, `bridge_id`, `device_aliases`, per-device `allowed_actions` and the allowed action descriptions in `actions`, including parameter and metric schemas. This gives Broker implementers the deployed action contract. Plugin imports and constructors run during validation and must be free of device interactions.
+| 模式 | 行为说明 | 适用场景与退出码 |
+| :--- | :--- | :--- |
+| `--check` | **纯离线校验**私有配置、设备别名映射及白名单插件元数据，输出 `protocol_version`、`bridge_id`、每设备 `allowed_actions` 及完整参数/指标 Schema | 上线前预检、向 Broker 导出动作契约（注意：加载插件模块与构造函数时严禁触发真机 I/O） |
+| `--probe` | 读取本机设备在线态与硬件遥测，向 Broker 发送一次心跳；**不认领任务、不改动待发回执**，并刷新本地健康文件 | 验证网络连通与 Token 是否有效；`0` 表示心跳被确认（设备是否在线看 `devices[].connectionState`），Broker 报错返回 `1`，与运行中 worker 锁冲突返回 `6` |
+| `--once` | 完成一轮“恢复回执 → 心跳 → 认领并执行（如有）→ 上报回执”循环后退出 | 单次冒烟验收或受控联调（会真实执行白名单动作） |
+| 默认（无模式参数） | 持续常驻运行 | 生产守护进程入口 |
+| `--health` | 独立检查最近一次成功心跳是否新鲜，不争抢运行实例锁 | 外部监控探针；新鲜返回 `0`，缺失或过期返回 `1`，配置错误返回 `2` |
 
-`--probe` reads device availability and telemetry and sends one Broker heartbeat. It leaves queued jobs and saved receipts for the execution worker. The result contains `broker_reachable` and `devices`. Exit code `0` confirms an acknowledged heartbeat, including when a device is offline. Inspect each device's `connectionState` and `busy` fields separately. A Broker error returns `1`, and a running worker holding the same instance lock returns `6`. A probe creates local state files as needed and updates the acknowledged-heartbeat health file.
+---
 
-`--once` completes one heartbeat/claim cycle and flushes durable receipts. It can execute an allowlisted business action. A normal invocation runs continuously. `--health` reports the freshness of the last acknowledged heartbeat, returning exit code `0` for fresh data or `1` for missing/stale data. Configuration errors use exit code `2`. The four mode flags are mutually exclusive.
+## 3. 执行、租约与崩溃恢复机制
 
-## Execution and recovery
+- **并发与锁隔离**：单个 worker 每次最多认领并执行 1 个任务；每台物理设备拥有独立的设备锁，因此同一台宿主机上可以通过多个独立 worker 并发驱动不同设备。同时，每个 `(broker_url, bridge_id)` 命名空间持有独立实例锁，防止两个进程误操作同一份回执状态。
+- **白名单与严格校验**：每台设备只向 Broker 上报自己的白名单 `capabilities`。发现外部插件时会先按白名单过滤再加载模块，标记为 `local_only` 的动作在配置校验阶段即被拒绝。认领到任务后，所有字段、参数 Schema、时间戳与租约截止时间都会先做校验。
+- **后台续租与取消边界**：长任务执行期间，后台线程自动续租并同步发送 `busy` 心跳（心跳失败不会中断续租）。如果租约被拒、过期或收到 Broker 取消信号，会在准备或 `inspect` 阶段的下一个检查点安全中止；一旦有副作用动作在账本提交了 `submitting` 预留，系统会允许 `submit` 与 `confirm` 在原预算和任务过期时间内尽量走完，避免半途留下未确认状态。
+- **空闲轮询调度**：空闲周期会刷新设备连接与锁状态，仅在到达心跳间隔时采样电量与电源遥测；长轮询等待时间会计入建议轮询间隔，收到 Broker 的 `hasPendingJobs` 提示时会立即发起下一轮认领。
+- **持久化回执（SQLite Outbox）**：任务预留与最终回执保存在 `0600` 权限的 SQLite 数据库中。回执会先落盘再发 HTTP 请求，网络重试期间内容不可变，进程重启后未送达的回执会自动补发；崩溃时残留的 `running` 任务会恢复为 `unknown`。若 Broker 返回 `409` 或 `410`，本地会停止重试并保留已记录的结果。
+- **优雅退出与退避重连**：收到 `SIGTERM` / `SIGINT` 后停止拉取新任务、通知取消守卫、等待已提交预留的动作收尾并尝试投递最终回执；未送达的回执会在下次启动时继续投递。网络抖动采用带随机抖动的指数退避；鉴权或协议错误则拉长重试间隔并在 `stderr` 输出脱敏告警。
+- **跨升级保留状态**：升级或重启服务时请务必保留 `state_dir`。其中动作账本保护物理设备级幂等身份，回执库按 `(broker_url, bridge_id)` 隔离。
+- **脱敏上报边界**：远端回执中的摘要由执行状态生成，指标须通过插件声明的 Schema 校验并自动剔除已知凭据与硬件串号；截图、UI 布局树、任意 Shell 和任意文件读写始终不进入 Bridge 通道。
 
-Each worker claims at most one job at a time. Devices retain independent physical-device locks, and separate workers can operate different devices concurrently. A broker/bridge-ID instance lock prevents two local processes from recovering or dispatching the same worker state concurrently.
+---
 
-Each configured device advertises its own explicit capabilities. External discovery filters entry points before importing plugin code. Local-only actions are rejected during configuration validation. Claim fields, action parameters, timestamps and lease deadlines are validated before execution.
+## 4. 常驻服务部署（`systemd` / `launchd`）
 
-The worker renews leases in the background and sends busy heartbeats during long jobs. Heartbeat failures are logged independently of lease renewal. A rejected, expired or canceled lease stops preparation and inspection at the next deadline/checkpoint check. After the action ledger commits its `submitting` reservation, submission and confirmation can finish within their original budgets and the job expiration deadline. Execution failures and inconclusive confirmation produce `unknown`.
+仓库提供了开箱可用的服务模板，分别位于 `deploy/systemd` 与 `deploy/launchd`，两者均调用同一个 `harmony-pilot serve` 入口。
 
-Idle cycles refresh device connectivity and lock state. Battery and power telemetry are sampled when a heartbeat is due. Long-poll time counts toward the recommended polling interval, and pending-job hints trigger immediate claims. Heartbeat state and health-file updates are serialized. Worker shutdown allows both in-flight lease and heartbeat requests to finish.
+部署前通用检查：
+1. 将模板中的解释器、配置文件、工作目录与日志路径全部替换为宿主机绝对路径；
+2. 确保运行服务的系统账号具备官方 `hdc` 执行权限，且手机已对该账号完成调试授权；
+3. 提前准备好 `0700` 权限的 `state_dir` 和 `0600` 权限的配置文件/凭据文件，先跑通 `--check` 再启用服务。
 
-Job reservations and final receipts live in an owner-only SQLite outbox. Receipts are saved before HTTP completion, remain immutable during retries, and survive worker restarts. Unfinished jobs recover as `unknown`. Repeated jobs resend their recorded receipt. Completion conflicts (`409` or `410`) close local delivery while preserving the recorded result.
-
-`SIGTERM` and `SIGINT` stop claiming work and request cancellation through the shared guard. An action with a committed `submitting` reservation reaches confirmation within its remaining budget. The worker then finishes local ledger/outbox handling and attempts final receipt delivery. Pending receipts are delivered on the next start. Network failures use capped exponential backoff with jitter. Authentication and protocol failures use a longer retry interval and sanitized stderr warnings.
-
-Keep the state directory across upgrades and restarts. The action ledger protects physical-device/action/idempotency-key identity across workers. The receipt outbox is scoped to broker URL and Bridge ID.
-
-Remote completion summaries are generated from the status. Metrics pass the declared action schema and receipt limits, with known credentials and hardware serials removed. Plugin authors remain responsible for declaring privacy-safe business metrics. UI snapshots, screenshots, arbitrary shell commands and arbitrary file operations stay outside the Bridge dispatch surface.
-
-## Service installation
-
-The templates under `deploy/systemd` and `deploy/launchd` use the same `serve` entry point. Replace installation paths, service account and configuration paths for the host. Give that account access to the official hdc executable and already-authorized devices. Prepare the state directory with mode `0700` and validate the configuration before enabling the service.
-
-For systemd, install the unit under the host service directory and use the host service manager to enable/start it. For launchd, replace every `/ABSOLUTE/PATH` value, choose a unique label and load the plist as the user who owns the device connection. Token files use mode `0600`. Service shutdown allows up to 90 seconds for bounded network calls and local cleanup.
+- **Linux（`systemd`）**：将 unit 文件安装到宿主机服务目录后，使用 `systemctl enable --now` 启动。
+- **macOS（`launchd`）**：替换模板中所有 `/ABSOLUTE/PATH` 占位符、设置唯一的 `Label`，并在拥有手机连接权限的用户会话下加载 plist。服务关闭超时建议保留至 90 秒，以便完成有界网络收尾与本地清理。
