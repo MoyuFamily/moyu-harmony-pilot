@@ -1,5 +1,7 @@
 # Running the Pull Bridge
 
+For a host setup walkthrough and an external action example, follow [Cross-machine Integration](remote-integration.md).
+
 ## Configuration
 
 Copy `bridge.example.json` to `bridge.local.json` and edit the broker URL, configured aliases and capabilities. Set file mode `0600` on the Bridge config, device mapping and token file. Relative paths resolve against the Bridge config directory.

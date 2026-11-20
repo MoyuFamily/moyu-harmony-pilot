@@ -4,12 +4,15 @@ import copy
 import importlib
 import io
 import json
+import shutil
 import signal
 import time
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -579,3 +582,92 @@ def test_serve_probe_schema_and_exclusive_modes():
         code, output, _ = _run_cli(["serve", "--probe", mode, "--json"], env={})
         assert code == 2
         assert not _parse_single_json_envelope(output)["ok"]
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_local_ledger_survives_remote_worker_migration(bridge, uncertain):
+    worker, broker, plugin, _, transport, _ = bridge
+    payload = job_payload()
+    if uncertain:
+        plugin.confirm_error = TimeoutError()
+    local_outcome = worker.runner.run(
+        worker.devices["phone"], payload["action"], payload["params"],
+        idempotency_key=payload["idempotencyKey"],
+    )
+    assert local_outcome.status == ("unknown" if uncertain else "succeeded")
+    plugin.calls.clear()
+    config = replace(
+        worker.config, bridge_id="migrated-worker", broker_url="https://other.example.org",
+    )
+    migrated = BridgeWorker(
+        config, HdcClient(transport=transport), client=broker, registry=worker.registry,
+    )
+    broker.jobs = [payload]
+    migrated.run_once()
+    assert broker.receipts[0]["status"] == ("unknown" if uncertain else "already_done")
+    assert not plugin.calls
+    assert worker.store.path != migrated.store.path
+    assert worker.runner.state_dir == migrated.runner.state_dir
+
+
+@pytest.mark.parametrize("minimum_battery", [20, 90])
+def test_remote_example_through_cli_http_encoding_and_receipt_retry(
+    tmp_path, monkeypatch, minimum_battery,
+):
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [])
+    source = Path(__file__).resolve().parents[1] / "examples" / "bridge"
+    deployment = tmp_path / "deployment"
+    shutil.copytree(source, deployment)
+    state = FakeDeviceState("SYNTHETIC_EXTERNAL_PLUGIN_DEVICE")
+    transport = FakeHdcTransport([state])
+    devices_path = deployment / "devices.local.yaml"
+    devices_path.write_text(f'devices:\n  harmony-01: "{state.serial}"\n')
+    devices_path.chmod(0o600)
+    token_path = deployment / "bridge-token.local"
+    token_path.write_text("synthetic-integration-token")
+    token_path.chmod(0o600)
+    config_path = deployment / "bridge.local.json"
+    config_path.write_text((deployment / "bridge.example.json").read_text())
+    config_path.chmod(0o600)
+    broker = FakeBroker()
+    broker.jobs = [job_payload(
+        deviceAlias="harmony-01", action="example.health_check",
+        params={"minimum_battery": minimum_battery}, timeoutSeconds=30,
+    )]
+    requests = []
+
+    def open_request(request, *, timeout):
+        requests.append(request)
+        assert timeout > 0
+        assert request.get_header("Authorization") == "Bearer synthetic-integration-token"
+        assert request.get_header("X-harmony-pilot-protocol") == "1"
+        path = urlsplit(request.full_url).path
+        payload = json.loads(request.data)
+        response = io.BytesIO(json.dumps(broker.post(path, payload)).encode())
+        response.status = 200
+        response.headers = {"Content-Type": "application/json"}
+        return response
+
+    worker_module = importlib.import_module("moyu_harmony_pilot.bridge.worker")
+    opener = Mock()
+    opener.open.side_effect = open_request
+    monkeypatch.setattr(
+        worker_module, "HttpBridgeClient", lambda config: HttpBridgeClient(config, opener=opener),
+    )
+    monkeypatch.chdir(tmp_path)
+    args = ["serve", "--config", str(config_path), "--once", "--json"]
+    complete_path = "/bridge/v1/jobs/job_001/complete"
+    broker.failures[complete_path] = [BridgeError("synthetic disconnect")]
+    code, output, _ = _run_cli(args, transport=transport, env={})
+    assert code == 1, output
+    assert not _parse_single_json_envelope(output)["ok"]
+    saved_receipt = next(payload for path, payload in broker.calls if path == complete_path)
+    assert saved_receipt["status"] == ("succeeded" if minimum_battery == 20 else "failed")
+    assert saved_receipt["metrics"] == {"battery_percent": 72, "ready": minimum_battery == 20}
+    code, output, _ = _run_cli(args, transport=transport, env={})
+    assert code == 0, output
+    assert _parse_single_json_envelope(output)["data"]["claimed"] == 0
+    assert broker.receipts == [saved_receipt]
+    assert len([path for path, _ in broker.calls if path == complete_path]) == 2
+    assert all(state.serial.encode() not in request.data for request in requests)
+    assert not any("uiInput" in " ".join(args) for _, args, _ in transport.calls)

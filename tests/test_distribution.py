@@ -48,9 +48,13 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path):
             "docs/actions.md",
             "docs/mcp.md",
             "docs/bridge-worker.md",
+            "docs/remote-integration.md",
             "skills/harmony-pilot/SKILL.md",
             "examples/actions/actions.json",
             "examples/actions/ui_summary.py",
+            "examples/bridge/bridge.example.json",
+            "examples/bridge/plugins/actions.json",
+            "examples/bridge/plugins/health_check.py",
             "deploy/systemd/harmony-pilot.service",
             "deploy/launchd/org.example.harmony-pilot.plist",
         }

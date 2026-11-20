@@ -1,0 +1,16 @@
+{
+  "bridge_id": "edge-example",
+  "broker_url": "https://broker.example.org",
+  "devices_config": "devices.local.yaml",
+  "state_dir": ".state",
+  "token_file": "bridge-token.local",
+  "plugin_paths": ["plugins"],
+  "allowed_actions": {
+    "harmony-01": ["device.health", "example.health_check"]
+  },
+  "heartbeat_seconds": 30,
+  "poll_seconds": 15,
+  "wait_seconds": 15,
+  "lease_seconds": 15,
+  "request_timeout": 10
+}

@@ -51,6 +51,7 @@ See [docs/device-setup.md](docs/device-setup.md) for installing official `hdc 3.
 - **[Local Environment & Device Setup Guide](docs/device-setup.md)** — Official `hdc` installation (macOS ARM64 / Linux), Python 3.11 environment setup, HarmonyOS NEXT device prerequisites, read-only verification commands, and USB troubleshooting.
 - **[Action Plugins & Local Execution](docs/actions.md)** — Plugin discovery, parameter and receipt schemas, execution budgets, SQLite deduplication, and an external read-only example.
 - **[Pull Bridge Worker](docs/bridge-worker.md)** — Private configuration, per-device capabilities, lease cancellation, durable receipts, health probes and service templates.
+- **[Cross-machine Integration](docs/remote-integration.md)** — Host preparation, external plugin deployment, contract export, heartbeat preflight and a read-only remote integration example.
 - **[Local MCP Adapter](docs/mcp.md)** — Optional MCP v2 stdio tools, safe-mode allowlists and explicitly enabled local lab sessions.
 - **[Harmony Pilot Agent Skill](skills/harmony-pilot/SKILL.md)** — Portable instructions for observation, controlled actions, idempotency and human handoff.
 - **[Pull Bridge Protocol Specification (v1 Draft)](docs/bridge-protocol.md)** — Server-agnostic HTTPS pull protocol (`heartbeat` / `claim` / `lease` / `complete`) for integrating any external scheduler or control plane.
