@@ -30,6 +30,7 @@ class BridgeConfig:
     wait_seconds: int = 15
     lease_seconds: float = 15
     request_timeout: float = 10
+    plugin_paths: tuple[Path, ...] | None = None
 
     def __post_init__(self) -> None:
         identifier(self.bridge_id)
@@ -57,6 +58,7 @@ class BridgeConfig:
                 "wait_seconds",
                 "lease_seconds",
                 "request_timeout",
+                "plugin_paths",
             }
             if not required <= values.keys() or values.keys() - required - optional:
                 raise ValueError("fields")
@@ -85,6 +87,12 @@ class BridgeConfig:
             wait = values.get("wait_seconds", 15)
             if type(wait) is not int or not 0 <= wait <= 25:
                 raise ValueError("wait_seconds")
+            plugin_paths = None
+            if "plugin_paths" in values:
+                paths = values["plugin_paths"]
+                if not isinstance(paths, list) or len(paths) > 32:
+                    raise ValueError("plugin_paths")
+                plugin_paths = tuple(cls._path(source.parent, path).resolve() for path in paths)
             return cls(
                 bridge_id=identifier(values["bridge_id"]),
                 broker_url=broker_url(values["broker_url"]),
@@ -99,6 +107,7 @@ class BridgeConfig:
                 poll_seconds=number(values.get("poll_seconds", 15), minimum=0.1, maximum=300),
                 lease_seconds=number(values.get("lease_seconds", 15), minimum=0.1, maximum=30),
                 request_timeout=number(values.get("request_timeout", 10), minimum=0.1, maximum=60),
+                plugin_paths=plugin_paths,
             )
         except Exception as exc:
             raise DeviceConfigurationError(
@@ -135,6 +144,7 @@ def validate_configuration(
             env=env,
             remote=True,
             allowed_actions=allowed,
+            plugin_paths=config.plugin_paths,
         )
     )
     for action in allowed:

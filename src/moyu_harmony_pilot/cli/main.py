@@ -338,6 +338,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve_mode = p_serve.add_mutually_exclusive_group()
     serve_mode.add_argument("--once", action="store_true", help="Run one heartbeat/claim cycle.")
     serve_mode.add_argument("--check", action="store_true", help="Validate configuration offline.")
+    serve_mode.add_argument(
+        "--probe", action="store_true", help="Send device telemetry and a broker heartbeat only.",
+    )
     serve_mode.add_argument("--health", action="store_true", help="Probe heartbeat freshness.")
 
     return parser
@@ -843,13 +846,23 @@ def _cmd_serve(args, *, transport, env) -> tuple[ExitCode, dict, str]:
         code = ExitCode.OK if data["healthy"] else ExitCode.FAILED
         return code, data, json.dumps(data)
     if args.check:
-        validate_configuration(config, env=env)
-        data = {"valid": True, "bridge_id": config.bridge_id,
-                "device_aliases": sorted(config.allowed_actions)}
+        _, registry = validate_configuration(config, env=env)
+        allowed = {name for actions in config.allowed_actions.values() for name in actions}
+        data = {
+            "valid": True,
+            "protocol_version": 1,
+            "bridge_id": config.bridge_id,
+            "device_aliases": sorted(config.allowed_actions),
+            "allowed_actions": config.allowed_actions,
+            "actions": [registry.describe(name) for name in sorted(allowed)],
+        }
     else:
         hdc = _make_hdc_client(args=args, transport=transport, env=env)
         worker = BridgeWorker(config, hdc, env=env)
-        data = worker.run_once() if args.once else worker.run()
+        if args.probe:
+            data = worker.probe()
+        else:
+            data = worker.run_once() if args.once else worker.run()
     return ExitCode.OK, data, json.dumps(data, ensure_ascii=False, indent=2)
 
 

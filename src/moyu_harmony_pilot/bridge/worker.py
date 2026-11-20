@@ -321,6 +321,18 @@ class BridgeWorker:
         with self.lock, self._signals():
             return self._cycle()
 
+    def probe(self) -> dict:
+        """Publish read-only inventory without claiming jobs or changing saved receipts."""
+        with self.lock:
+            self.inventory = self._inventory()
+            self.last_heartbeat = float("-inf")
+            self.heartbeat()
+            return {
+                "bridge_id": self.config.bridge_id,
+                "broker_reachable": True,
+                "devices": self.inventory,
+            }
+
     def run(self) -> dict:
         failures = 0
         with self.lock, self._signals():

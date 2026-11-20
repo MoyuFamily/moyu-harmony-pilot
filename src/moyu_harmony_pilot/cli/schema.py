@@ -56,6 +56,48 @@ def build_cli_schema() -> dict[str, Any]:
             "local_plugin_manifest": "actions.json",
             "execution_thread": "main",
         },
+        "bridge_config": {
+            "type": "object",
+            "required": ["bridge_id", "broker_url", "devices_config", "allowed_actions"],
+            "additionalProperties": False,
+            "properties": {
+                "bridge_id": {"type": "string"},
+                "broker_url": {"type": "string"},
+                "devices_config": {"type": "string"},
+                "state_dir": {"type": "string", "default": ".state"},
+                "token_env": {"type": "string", "default": "HARMONY_PILOT_BRIDGE_TOKEN"},
+                "token_file": {"type": "string"},
+                "allowed_actions": {
+                    "type": "object", "minProperties": 1, "maxProperties": 32,
+                    "additionalProperties": {
+                        "type": "array", "maxItems": 64, "items": {"type": "string"},
+                    },
+                },
+                "plugin_paths": {
+                    "type": "array", "maxItems": 32,
+                    "items": {"type": "string", "minLength": 1},
+                    "description": (
+                        "Config-relative plugin directories. When present, replaces "
+                        "HARMONY_PILOT_PLUGIN_PATHS. Installed entry points remain available."
+                    ),
+                },
+                "heartbeat_seconds": {
+                    "type": "number", "minimum": 1, "maximum": 300, "default": 30,
+                },
+                "poll_seconds": {
+                    "type": "number", "minimum": 0.1, "maximum": 300, "default": 15,
+                },
+                "wait_seconds": {
+                    "type": "integer", "minimum": 0, "maximum": 25, "default": 15,
+                },
+                "lease_seconds": {
+                    "type": "number", "minimum": 0.1, "maximum": 30, "default": 15,
+                },
+                "request_timeout": {
+                    "type": "number", "minimum": 0.1, "maximum": 60, "default": 10,
+                },
+            },
+        },
         "envelope_schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
@@ -123,10 +165,13 @@ def build_cli_schema() -> dict[str, Any]:
                                  "description": "Private Bridge JSON configuration path."},
                     "--once": {"type": "boolean", "default": False},
                     "--check": {"type": "boolean", "default": False},
+                    "--probe": {"type": "boolean", "default": False,
+                                  "description": "Read telemetry and send a heartbeat only."},
                     "--health": {"type": "boolean", "default": False},
                 },
-                "mutually_exclusive": [["--once", "--check", "--health"]],
+                "mutually_exclusive": [["--once", "--check", "--probe", "--health"]],
                 "examples": ["harmony-pilot serve --config bridge.local.json --check --json",
+                             "harmony-pilot serve --config bridge.local.json --probe --json",
                              "harmony-pilot serve --config bridge.local.json --json"],
             },
             "plugins": {

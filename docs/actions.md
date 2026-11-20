@@ -45,6 +45,8 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 
 Separate multiple directories with the host path separator (`:` on supported macOS and Linux hosts). Duplicate action IDs and inconsistent metadata stop discovery with `configuration_error`. Restart the process to load edited plugin modules.
 
+Bridge services can set the config-relative `plugin_paths` array in their private JSON configuration. The SDK also accepts an explicit directory collection through `ActionRegistry.discover(plugin_paths=...)`. Both override the directory environment variable for that invocation and retain installed entry-point discovery.
+
 ## Plugin contract
 
 Import `ActionPlugin`, `ActionSpec`, `ActionContext` and `ActionOutcome` from `moyu_harmony_pilot.actions`. Read-only plugins implement `execute(ctx, params)`. Declare parameter and metric schemas, version, description, timeout and side-effect classification in `spec`.
@@ -77,7 +79,7 @@ Runner-generated failures contain stable status codes and generic summaries. Plu
 
 ## Remote execution boundary
 
-The current CLI provides local execution. The registry and runner expose `remote=True` for future adapters, together with an explicit `allowed_actions` collection. The default collection is empty. Remote discovery filters external entry-point names and directory manifest IDs before loading their modules. Remote invocation checks the allowlist again and rejects actions marked `local_only`, including `ui.inspect`.
+The CLI provides local execution. Bridge and MCP use the registry and runner's `remote=True` gates with an explicit `allowed_actions` collection. The default collection is empty. Remote discovery filters external entry-point names and directory manifest IDs before loading their modules. Remote invocation checks the allowlist again and rejects actions marked `local_only`, including `ui.inspect`.
 
 The Pull Bridge uses these gates through `serve`. MCP integration follows the same action contract.
 

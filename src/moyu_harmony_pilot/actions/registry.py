@@ -109,6 +109,7 @@ class ActionRegistry:
         env: Mapping[str, str] | None = None,
         allowed_actions: Iterable[str] = (),
         remote: bool = False,
+        plugin_paths: Iterable[str | Path] | None = None,
     ) -> ActionRegistry:
         from moyu_harmony_pilot.actions.builtin import builtin_plugins
 
@@ -125,7 +126,12 @@ class ActionRegistry:
                 if remote and entry.name not in registry.allowed_actions:
                     continue
                 registry._register_factory(entry.name, entry.load())
-            for raw_path in environment.get("HARMONY_PILOT_PLUGIN_PATHS", "").split(os.pathsep):
+            paths = plugin_paths
+            if paths is None:
+                paths = environment.get("HARMONY_PILOT_PLUGIN_PATHS", "").split(os.pathsep)
+            if isinstance(paths, str | Path):
+                raise DeviceConfigurationError("plugin_paths must be a collection of directories.")
+            for raw_path in paths:
                 if raw_path:
                     registry._load_directory(Path(raw_path).expanduser().resolve(), remote=remote)
         except (Exception, SystemExit) as exc:

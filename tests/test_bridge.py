@@ -16,6 +16,7 @@ import pytest
 from moyu_harmony_pilot.actions import ActionRegistry, Inspection
 from moyu_harmony_pilot.bridge import BridgeConfig, BridgeError, BridgeWorker, HttpBridgeClient
 from moyu_harmony_pilot.bridge.client import _RejectRedirect
+from moyu_harmony_pilot.bridge.config import validate_configuration
 from moyu_harmony_pilot.bridge.lease import LeaseKeeper
 from moyu_harmony_pilot.bridge.protocol import (
     BridgeProtocolError,
@@ -26,6 +27,7 @@ from moyu_harmony_pilot.bridge.protocol import (
     utc_now,
 )
 from moyu_harmony_pilot.bridge.worker import health_status
+from moyu_harmony_pilot.cli.schema import build_cli_schema
 from moyu_harmony_pilot.device import DeviceBusyError, DeviceConfigurationError
 from moyu_harmony_pilot.hdc import HdcClient
 from tests.fakes import FakeDeviceState, FakeHdcTransport
@@ -449,3 +451,131 @@ def test_receipts_redact_known_secrets(bridge):
     )
     assert result["metrics"] == {"ok": 1}
     assert "private page text" not in json.dumps(result)
+
+
+def test_configured_plugin_paths_and_contract_export_are_offline(bridge, monkeypatch):
+    worker, _, _, device, _, config_path = bridge
+    directory = config_path.parent / "plugins:external"
+    directory.mkdir()
+    (directory / "actions.json").write_text(json.dumps({
+        "example.remote": "remote.py:RemoteAction",
+        "example.blocked": "blocked.py:BlockedAction",
+    }))
+    (directory / "remote.py").write_text(
+        "from moyu_harmony_pilot.actions import ActionPlugin, ActionSpec, ActionOutcome\n"
+        "print('synthetic plugin initialization')\n"
+        "class RemoteAction(ActionPlugin):\n"
+        "    spec = ActionSpec('example.remote', '1', 'Synthetic remote action')\n"
+        "    def execute(self, ctx, params):\n"
+        "        return ActionOutcome()\n"
+    )
+    (directory / "blocked.py").write_text("raise AssertionError('unlisted module imported')\n")
+    values = json.loads(config_path.read_text())
+    values["plugin_paths"] = [directory.name]
+    values["allowed_actions"] = {"phone": ["example.remote"]}
+    config_path.write_text(json.dumps(values))
+    environment = {
+        "HARMONY_PILOT_BRIDGE_TOKEN": worker.config.token,
+        "HARMONY_PILOT_PLUGIN_PATHS": str(directory / "missing"),
+        "HARMONY_PILOT_HDC_PATH": "/not/installed",
+    }
+    monkeypatch.chdir(config_path.parent.parent)
+    config = BridgeConfig.load(config_path, env=environment)
+    assert config.plugin_paths == (directory.resolve(),)
+    code, output, stderr = _run_cli(
+        ["serve", "--config", str(config_path), "--check", "--json"], env=environment,
+    )
+    assert code == 0, output
+    assert "synthetic plugin initialization" in stderr
+    data = _parse_single_json_envelope(output)["data"]
+    assert data["protocol_version"] == 1
+    assert data["allowed_actions"] == {"phone": ["example.remote"]}
+    assert [action["action_id"] for action in data["actions"]] == ["example.remote"]
+    assert data["actions"][0]["remote_allowed"]
+    for private in (worker.config.token, device.serial, str(directory)):
+        assert private not in output
+
+    # Older configurations retain environment-based plugin discovery.
+    values.pop("plugin_paths")
+    config_path.write_text(json.dumps(values))
+    environment["HARMONY_PILOT_PLUGIN_PATHS"] = str(directory)
+    # The environment syntax uses a path separator, so use a separator-free path here.
+    plain_directory = directory.with_name("external")
+    directory.rename(plain_directory)
+    environment["HARMONY_PILOT_PLUGIN_PATHS"] = str(plain_directory)
+    config = BridgeConfig.load(config_path, env=environment)
+    assert config.plugin_paths is None
+    validate_configuration(config, env=environment)
+    values["plugin_paths"] = []
+    config_path.write_text(json.dumps(values))
+    with pytest.raises(DeviceConfigurationError, match="Unknown action"):
+        validate_configuration(BridgeConfig.load(config_path, env=environment), env=environment)
+
+
+@pytest.mark.parametrize("paths", [None, "plugins", {}, [1], [" "], ["plugins"] * 33])
+def test_invalid_configured_plugin_paths_are_rejected(bridge, paths):
+    worker, _, _, _, _, config_path = bridge
+    values = json.loads(config_path.read_text())
+    values["plugin_paths"] = paths
+    config_path.write_text(json.dumps(values))
+    with pytest.raises(DeviceConfigurationError):
+        BridgeConfig.load(config_path, env={"HARMONY_PILOT_BRIDGE_TOKEN": worker.config.token})
+
+
+def test_probe_preserves_jobs_receipts_and_plugin_callbacks(bridge):
+    worker, broker, plugin, device, transport, _ = bridge
+    running = Job.parse(job_payload(jobId="job_running"))
+    pending = Job.parse(job_payload(jobId="job_pending"))
+    worker.store.reserve(running)
+    worker.store.reserve(pending)
+    worker.store.finish(pending.job_id, {"status": "unknown"})
+    receipts = worker.store.pending()
+    broker.jobs = [job_payload()]
+    for _ in range(2):
+        result = worker.probe()
+        assert result["broker_reachable"]
+        assert result["devices"][0]["busy"]
+        assert device.serial not in json.dumps(result)
+    assert [path for path, _ in broker.calls] == ["/bridge/v1/heartbeat"] * 2
+    assert worker.store.pending() == receipts
+    assert worker.counts == {"claimed": 0, "completed": 0, "recovered": 0, "errors": 0}
+    assert not plugin.calls
+    assert len(broker.jobs) == 1
+    assert not any("uiInput" in " ".join(args) for _, args, _ in transport.calls)
+    # The unfinished reservation remains recoverable after the probe.
+    assert worker.store.recover() == 1
+
+
+@pytest.mark.parametrize("device_status", ["Connected", "Offline"])
+def test_probe_cli_reports_connectivity_and_device_state(bridge, monkeypatch, device_status):
+    worker, broker, _, device, transport, config_path = bridge
+    values = json.loads(config_path.read_text())
+    values["allowed_actions"] = {"phone": ["device.health"]}
+    config_path.write_text(json.dumps(values))
+    device.status = device_status
+    worker_module = importlib.import_module("moyu_harmony_pilot.bridge.worker")
+    monkeypatch.setattr(worker_module, "HttpBridgeClient", lambda config: broker)
+    args = ["serve", "--config", str(config_path), "--probe", "--json"]
+    env = {"HARMONY_PILOT_BRIDGE_TOKEN": worker.config.token}
+    code, output, _ = _run_cli(args, env=env, transport=transport)
+    assert code == 0, output
+    data = _parse_single_json_envelope(output)["data"]
+    expected = "online" if device_status == "Connected" else "offline"
+    assert data["devices"][0]["connectionState"] == expected
+    if device_status == "Connected":
+        assert data["devices"][0]["batteryPercent"] == 72
+    assert [path for path, _ in broker.calls] == ["/bridge/v1/heartbeat"]
+    with worker.lock:
+        assert _run_cli(args, env=env, transport=transport)[0] == 6
+    broker.failures["/bridge/v1/heartbeat"] = [BridgeError("unreachable")]
+    assert _run_cli(args, env=env, transport=transport)[0] == 1
+
+
+def test_serve_probe_schema_and_exclusive_modes():
+    schema = build_cli_schema()
+    assert "plugin_paths" in schema["bridge_config"]["properties"]
+    assert "--probe" in schema["commands"]["serve"]["options"]
+    for mode in ("--once", "--health", "--check"):
+        code, output, _ = _run_cli(["serve", "--probe", mode, "--json"], env={})
+        assert code == 2
+        assert not _parse_single_json_envelope(output)["ok"]
