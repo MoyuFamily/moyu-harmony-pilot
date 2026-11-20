@@ -8,6 +8,7 @@ from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
+from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.bridge.config import BridgeConfig
 from moyu_harmony_pilot.bridge.protocol import (
     MAX_MESSAGE_BYTES,
@@ -50,6 +51,7 @@ class HttpBridgeClient:
                 "Content-Type": "application/json; charset=utf-8",
                 "X-Harmony-Pilot-Protocol": "1",
                 "Accept": "application/json",
+                "User-Agent": f"harmony-pilot/{__version__}",
             },
         )
         opener = self._opener or build_opener(

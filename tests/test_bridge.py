@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ActionRegistry
 from moyu_harmony_pilot.bridge import BridgeConfig, BridgeError, BridgeWorker, HttpBridgeClient
 from moyu_harmony_pilot.bridge.client import _RejectRedirect
@@ -620,6 +621,7 @@ def test_http_transport_headers_limits_errors_and_redirect_rejection(bridge):
     request = opener.open.call_args.args[0]
     assert request.get_header("Authorization") == "Bearer " + config.token
     assert request.get_header("X-harmony-pilot-protocol") == "1"
+    assert request.get_header("User-agent") == f"harmony-pilot/{__version__}"
     assert request.full_url.startswith("https://")
     for status in (401, 403, 409, 410, 429, 503):
         opener.open.side_effect = HTTPError(
