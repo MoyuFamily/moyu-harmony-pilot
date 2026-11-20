@@ -1,0 +1,16 @@
+include AGENTS.md SECURITY.md README.md LICENSE pyproject.toml
+include devices.example.yaml bridge.example.json
+recursive-include docs *.md
+recursive-include skills *.md
+recursive-include examples *.py *.json
+prune examples/plugin-template
+include examples/plugin-template/pyproject.toml
+include examples/plugin-template/README.md examples/plugin-template/LICENSE
+include examples/plugin-template/MANIFEST.in examples/plugin-template/requirements-test.txt
+include examples/plugin-template/.gitignore
+include examples/plugin-template/.github/workflows/contract.yml
+recursive-include examples/plugin-template/src *.py
+recursive-include examples/plugin-template/tests *.py
+recursive-include deploy *.service *.plist
+recursive-include tests *.py *.json
+global-exclude *.pyc *.pyo .DS_Store

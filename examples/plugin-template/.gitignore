@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local runtime state & diagnostics (may contain PII / screenshots / tokens)
+.state/
+artifacts/
+diagnostics/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.tmp
+*.log
+
+# Local private plugins & device mappings
+plugins_local/
+devices.local.yaml
+devices.local.json
+devices.local.yml
+bridge.local.*
+bridge-token.local
+
+# Environments
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+ENV/
+
+# Distribution / packaging / testing
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

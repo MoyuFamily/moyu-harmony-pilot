@@ -1,6 +1,6 @@
 # Moyu Harmony Pilot — 需求与架构设计文档
 
-> **文档状态**：Draft v1 (`M0`)  
+> **文档状态**：v1，M0–M3 仓库实现已落地，真机验收按设备环境执行<br>
 > **目标平台**：HarmonyOS NEXT（HarmonyOS 5 / 6+，API 12+）物理设备  
 > **运行宿主机**：macOS（Apple Silicon / Intel）、Linux（x86_64，兼容具备官方 `hdc` 的宿主环境）  
 > **开发语言**：Python 3.11+  
@@ -312,7 +312,7 @@ hdc (仅依赖 Python 标准库)
 
 | 阶段 | 交付内容 | 验收标准 |
 | :--- | :--- | :--- |
-| **M0（当前）** | 私有仓初始化（按开源标准）、`README`、`LICENSE`、`SECURITY`、`AGENTS.md`、需求文档、环境与真机指南及通用 Bridge 协议文档定稿 | 文档审阅通过，边界清晰无生态耦合；本机 `hdc` 与真机通路实测通过 |
+| **M0** | 私有仓初始化（按开源标准）、`README`、`LICENSE`、`SECURITY`、`AGENTS.md`、需求文档、环境与真机指南及通用 Bridge 协议文档定稿 | 文档审阅通过，边界清晰无生态耦合；本机 `hdc` 与真机通路实测通过 |
 | **M1（核心驱动与 Agent-Ready CLI）** | `hdc` + `ui`（含 `@eN` 紧凑语义快照与 `layout_hash`）+ `device` 核心包 + `devices / doctor / dump-ui --compact / screenshot / schema` CLI（统一 JSON 信封与语义退出码）+ 全离线单测 | CI 全绿；本机连接真实纯血鸿蒙设备完成 `doctor`、电量温度读取、截屏及紧凑 UI 快照导出 |
 | **M2（插件框架、自描述与视觉兜底）** | `actions` 契约、`plugins list / describe` 自描述 Schema、外部插件发现、SQLite 幂等防重账本、内置系统动作 + 脱敏示例插件、`vision` OCR 抽象（macOS Vision 适配与可选 `--som` 标注） | 外部独立目录挂载插件可零侵入运行；幂等防重、差分反馈、超时 `unknown` 与过温保护单测全覆盖 |
 | **M3（Pull Bridge、可选 MCP 与 Skill）** | `bridge` 客户端（严格对齐 [bridge-protocol.md](bridge-protocol.md)）、`serve` 守护命令、`launchd`/`systemd` 示例、协议兼容性测试夹具、可选 `[mcp]` 薄适配层（Safe / Local Lab 双模护栏）与 `skills/harmony-pilot/SKILL.md` | 离线模拟 Broker 与 MCP 护栏端到端测试全绿（含断网重连、租约过期、幂等重传、步数/敏感页熔断与优雅退出） |

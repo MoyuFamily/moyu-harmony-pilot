@@ -1,0 +1,3 @@
+{
+  "example.health_check": "health_check.py:HealthCheck"
+}

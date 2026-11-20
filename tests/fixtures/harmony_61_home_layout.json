@@ -1,0 +1,269 @@
+{
+  "attributes": {
+    "accessibilityId": "1000",
+    "bounds": "[0,0][1260,2720]",
+    "bundleName": "com.example.demo",
+    "checkable": "false",
+    "checked": "false",
+    "clickable": "false",
+    "description": "",
+    "enabled": "true",
+    "focused": "false",
+    "hashcode": "0x11aa22",
+    "hint": "",
+    "hostWindowId": "42",
+    "id": "",
+    "key": "root_scene",
+    "longClickable": "false",
+    "origBounds": "[0,0][1260,2720]",
+    "pagePath": "pages/Home",
+    "scrollable": "false",
+    "selected": "false",
+    "text": "",
+    "type": "root",
+    "visible": "true"
+  },
+  "children": [
+    {
+      "attributes": {
+        "bounds": "[0,0][1260,120]",
+        "bundleName": "com.ohos.sceneboard",
+        "clickable": "false",
+        "enabled": "true",
+        "type": "StatusBar",
+        "visible": "true"
+      },
+      "children": [
+        {
+          "attributes": {
+            "bounds": "[40,30][180,90]",
+            "bundleName": "com.ohos.sceneboard",
+            "clickable": "false",
+            "enabled": "true",
+            "text": "22:45",
+            "type": "Text",
+            "visible": "true"
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "attributes": {
+        "bounds": "[0,120][1260,2600]",
+        "bundleName": "com.example.demo",
+        "clickable": "false",
+        "enabled": "true",
+        "type": "Column",
+        "visible": "true"
+      },
+      "children": [
+        {
+          "attributes": {
+            "bounds": "[0,120][1260,260]",
+            "bundleName": "com.example.demo",
+            "clickable": "false",
+            "enabled": "true",
+            "type": "Row",
+            "visible": "true"
+          },
+          "children": [
+            {
+              "attributes": {
+                "bounds": "[48,150][600,230]",
+                "bundleName": "com.example.demo",
+                "clickable": "false",
+                "enabled": "true",
+                "id": "page_title",
+                "text": "Device Dashboard",
+                "type": "Text",
+                "visible": "true"
+              },
+              "children": []
+            },
+            {
+              "attributes": {
+                "bounds": "[1040,145][1212,235]",
+                "bundleName": "com.example.demo",
+                "clickable": "true",
+                "description": "Open settings",
+                "enabled": "true",
+                "key": "btn_settings",
+                "text": "",
+                "type": "Button",
+                "visible": "true"
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "attributes": {
+            "bounds": "[48,300][1212,500]",
+            "bundleName": "com.example.demo",
+            "clickable": "true",
+            "enabled": "true",
+            "id": "card_daily_action",
+            "text": "",
+            "type": "Row",
+            "visible": "true"
+          },
+          "children": [
+            {
+              "attributes": {
+                "bounds": "[72,330][520,400]",
+                "bundleName": "com.example.demo",
+                "clickable": "false",
+                "enabled": "true",
+                "text": "Daily Health Check",
+                "type": "Text",
+                "visible": "true"
+              },
+              "children": []
+            },
+            {
+              "attributes": {
+                "bounds": "[72,410][520,470]",
+                "bundleName": "com.example.demo",
+                "clickable": "false",
+                "enabled": "true",
+                "text": "Status: Ready",
+                "type": "Text",
+                "visible": "true"
+              },
+              "children": []
+            },
+            {
+              "attributes": {
+                "bounds": "[920,350][1180,450]",
+                "bundleName": "com.example.demo",
+                "clickable": "true",
+                "enabled": "true",
+                "id": "btn_run_now",
+                "text": "Run Now",
+                "type": "Button",
+                "visible": "true"
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "attributes": {
+            "bounds": "[48,540][1212,1800]",
+            "bundleName": "com.example.demo",
+            "clickable": "false",
+            "enabled": "true",
+            "id": "main_list",
+            "scrollable": "true",
+            "type": "List",
+            "visible": "true"
+          },
+          "children": [
+            {
+              "attributes": {
+                "bounds": "[48,560][1212,720]",
+                "bundleName": "com.example.demo",
+                "clickable": "true",
+                "enabled": "true",
+                "id": "item_0",
+                "type": "ListItem",
+                "visible": "true"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "bounds": "[80,600][600,680]",
+                    "bundleName": "com.example.demo",
+                    "clickable": "false",
+                    "enabled": "true",
+                    "text": "Diagnostics Logs",
+                    "type": "Text",
+                    "visible": "true"
+                  },
+                  "children": []
+                }
+              ]
+            },
+            {
+              "attributes": {
+                "bounds": "[48,740][1212,900]",
+                "bundleName": "com.example.demo",
+                "clickable": "true",
+                "enabled": "true",
+                "id": "item_1",
+                "type": "ListItem",
+                "visible": "true"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "bounds": "[80,780][600,860]",
+                    "bundleName": "com.example.demo",
+                    "clickable": "false",
+                    "enabled": "true",
+                    "text": "Battery Guard",
+                    "type": "Text",
+                    "visible": "true"
+                  },
+                  "children": []
+                }
+              ]
+            },
+            {
+              "attributes": {
+                "bounds": "[48,2900][1212,3060]",
+                "bundleName": "com.example.demo",
+                "clickable": "true",
+                "enabled": "true",
+                "id": "item_offscreen",
+                "text": "Offscreen Item",
+                "type": "ListItem",
+                "visible": "true"
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "attributes": {
+            "bounds": "[0,1800][1260,2100]",
+            "bundleName": "com.example.demo",
+            "clickable": "false",
+            "enabled": "true",
+            "type": "Column",
+            "visible": "false"
+          },
+          "children": [
+            {
+              "attributes": {
+                "bounds": "[100,1850][600,1950]",
+                "bundleName": "com.example.demo",
+                "clickable": "true",
+                "enabled": "true",
+                "id": "hidden_button",
+                "text": "Should Never Appear",
+                "type": "Button",
+                "visible": "true"
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "attributes": {
+            "bounds": "[0,0][0,0]",
+            "bundleName": "com.example.demo",
+            "clickable": "true",
+            "enabled": "true",
+            "id": "zero_area_ghost",
+            "text": "Ghost",
+            "type": "Button",
+            "visible": "true"
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}

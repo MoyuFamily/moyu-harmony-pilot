@@ -1,20 +1,20 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "moyu-harmony-pilot"
-version = "0.1.0.dev0"
+version = "0.1.0.dev1"
 description = "Production-grade, non-intrusive HarmonyOS NEXT (5/6+) Python automation engine and secure pull-based task bridge."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "MoyuFamily" }]
 keywords = ["harmonyos", "harmonyos-next", "hdc", "uitest", "automation"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -22,6 +22,8 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
+vision = ["pillow>=10.1"]
 vision-macos = [
     "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
@@ -30,15 +32,23 @@ vision-rapidocr = [
     "rapidocr-onnxruntime>=1.4.0",
 ]
 dev = [
+    "build>=1.2",
+    "setuptools>=77.0",
     "pytest>=8.0",
     "ruff>=0.8.0",
+    "pillow>=10.1",
+    "mcp>=2,<3",
 ]
 
 [project.scripts]
 harmony-pilot = "moyu_harmony_pilot.cli.main:main"
+harmony-pilot-mcp = "moyu_harmony_pilot.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/moyu-harmony-pilot/skills/harmony-pilot" = ["skills/harmony-pilot/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
