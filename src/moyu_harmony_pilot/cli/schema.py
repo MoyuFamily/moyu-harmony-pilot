@@ -137,7 +137,7 @@ def build_cli_schema() -> dict[str, Any]:
             "--config": {
                 "type": "string",
                 "description": (
-                    "Path to local device alias config (devices.local.yaml or .json)."
+                    "Device alias config, or the private Bridge JSON config for serve."
                 ),
             },
             "--hdc-path": {
@@ -148,7 +148,8 @@ def build_cli_schema() -> dict[str, Any]:
                 "type": "string",
                 "default": ".state",
                 "description": (
-                    "Local state directory for mode-0700 device locks and diagnostics."
+                    "Local state directory for mode-0700 device locks and diagnostics. "
+                    "For serve, set state_dir in its Bridge config."
                 ),
             },
             "--version": {

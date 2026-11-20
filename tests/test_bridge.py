@@ -582,6 +582,11 @@ def test_serve_probe_schema_and_exclusive_modes():
         code, output, _ = _run_cli(["serve", "--probe", mode, "--json"], env={})
         assert code == 2
         assert not _parse_single_json_envelope(output)["ok"]
+    code, output, _ = _run_cli(["serve", "--help", "--json"], env={})
+    assert code == 0
+    help_text = _parse_single_json_envelope(output)["data"]["text"]
+    assert "private Bridge JSON config" in help_text
+    assert "set state_dir in its config" in " ".join(help_text.split())
 
 
 @pytest.mark.parametrize("uncertain", [False, True])

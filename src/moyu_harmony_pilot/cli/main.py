@@ -73,7 +73,7 @@ def _add_shared_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
             "--config",
             default=argparse.SUPPRESS,
             metavar="PATH",
-            help="Path to local devices.local.yaml or devices.local.json.",
+            help="Device alias config, or the private Bridge JSON config for serve.",
         )
         parser.add_argument(
             "--hdc-path",
@@ -85,7 +85,7 @@ def _add_shared_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
             "--state-dir",
             default=argparse.SUPPRESS,
             metavar="DIR",
-            help="Local state directory for locks and diagnostics (default: .state).",
+            help="Local state directory (default: .state). For serve, set state_dir in its config.",
         )
     else:
         parser.add_argument(
@@ -98,7 +98,7 @@ def _add_shared_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
             "--config",
             default=None,
             metavar="PATH",
-            help="Path to local devices.local.yaml or devices.local.json.",
+            help="Device alias config, or the private Bridge JSON config for serve.",
         )
         parser.add_argument(
             "--hdc-path",
@@ -110,7 +110,7 @@ def _add_shared_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
             "--state-dir",
             default=".state",
             metavar="DIR",
-            help="Local state directory for locks and diagnostics (default: .state).",
+            help="Local state directory (default: .state). For serve, set state_dir in its config.",
         )
 
 
