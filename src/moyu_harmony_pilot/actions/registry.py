@@ -12,7 +12,12 @@ import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-from moyu_harmony_pilot.actions.models import ActionPlugin, ActionSpec, IdempotentAction
+from moyu_harmony_pilot.actions.models import (
+    ACTION_API_VERSION,
+    ActionPlugin,
+    ActionSpec,
+    IdempotentAction,
+)
 from moyu_harmony_pilot.actions.validation import (
     IDENTIFIER,
     MAX_JSON_BYTES,
@@ -42,6 +47,10 @@ class ActionRegistry:
         ):
             raise DeviceConfigurationError("Plugins must implement ActionPlugin and ActionSpec.")
         spec = ActionSpec(**plugin.spec.to_dict())
+        if type(spec.api_version) is not int or spec.api_version != ACTION_API_VERSION:
+            raise DeviceConfigurationError(
+                f"Unsupported action API version. This Pilot supports API {ACTION_API_VERSION}."
+            )
         if (
             not isinstance(spec.action_id, str)
             or not IDENTIFIER.fullmatch(spec.action_id)

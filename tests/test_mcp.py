@@ -55,6 +55,10 @@ def test_safe_tools_readonly_observation_and_allowlist(adapter):
         "run_action",
     }
     assert invoke(server, "devices")["data"]["devices"][0]["alias"] == "phone"
+    assert all(
+        action["api_version"] == 1
+        for action in invoke(server, "list_actions")["data"]["actions"]
+    )
     assert state.serial not in json.dumps(invoke(server, "devices"))
     assert invoke(server, "health", {"alias": "phone"})["ok"]
     assert invoke(server, "dump_ui", {"alias": "phone"})["data"]["snapshot"]["elements"]

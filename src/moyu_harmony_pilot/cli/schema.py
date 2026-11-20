@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from moyu_harmony_pilot import __version__
-from moyu_harmony_pilot.actions import ActionStatus
+from moyu_harmony_pilot.actions import ACTION_API_VERSION, ActionStatus
 from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES, SCHEMA_KEYWORDS
 from moyu_harmony_pilot.cli.codes import EXIT_CODE_DESCRIPTIONS
 from moyu_harmony_pilot.cli.envelope import SCHEMA_VERSION
@@ -41,6 +41,8 @@ def build_cli_schema() -> dict[str, Any]:
             },
         },
         "action_contract": {
+            "api_version": ACTION_API_VERSION,
+            "legacy_api_version": 1,
             "schema_keywords": sorted(SCHEMA_KEYWORDS),
             "max_json_bytes": MAX_JSON_BYTES,
             "max_nesting": 8,

@@ -43,8 +43,10 @@ def test_discovery_works_offline_at_each_flag_position(argv, monkeypatch):
     assert payload["command"] == "plugins"
     if "describe" in argv:
         assert payload["data"]["action_id"] == "device.health"
+        assert payload["data"]["api_version"] == 1
     else:
         assert len(payload["data"]["plugins"]) == 3
+        assert all(item["api_version"] == 1 for item in payload["data"]["plugins"])
         assert not any(item["remote_allowed"] for item in payload["data"]["plugins"])
 
 
@@ -179,9 +181,34 @@ def test_run_flags_match_introspection_schema():
     run = commands["run"]
     flags = {flag for action in run._actions for flag in action.option_strings}
     schema = build_cli_schema()
+    assert schema["action_contract"]["api_version"] == 1
+    assert schema["action_contract"]["legacy_api_version"] == 1
     expected = set(schema["commands"]["run"]["options"])
     shared = set(schema["global_options"]) - {"--version"}
     assert flags == expected | shared | {"-h", "--help"}
+
+
+def test_incompatible_directory_plugin_fails_cli_before_device_io(cli_setup, tmp_path):
+    directory = tmp_path / "plugins"
+    directory.mkdir()
+    (directory / "actions.json").write_text(json.dumps({
+        "example.future": "future.py:FutureAction",
+    }))
+    (directory / "future.py").write_text(
+        "from moyu_harmony_pilot.actions import ActionPlugin, ActionSpec, ActionOutcome\n"
+        "class FutureAction(ActionPlugin):\n"
+        "    spec = ActionSpec('example.future', '1', 'Future API', api_version=2)\n"
+        "    def execute(self, ctx, params):\n"
+        "        raise AssertionError('incompatible action executed')\n"
+    )
+    flags, transport = cli_setup
+    code, out, _ = _run_cli(
+        flags + ["run", "--action", "example.future"], transport=transport,
+        env={"HARMONY_PILOT_PLUGIN_PATHS": str(directory)},
+    )
+    assert code == 2
+    assert _parse_single_json_envelope(out)["error"]["code"] == "configuration_error"
+    assert transport.calls == []
 
 
 @pytest.mark.parametrize(

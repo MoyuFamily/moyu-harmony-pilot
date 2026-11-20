@@ -25,6 +25,9 @@ class ActionStatus(StrEnum):
     CONFIGURATION_ERROR = "configuration_error"
 
 
+ACTION_API_VERSION = 1
+
+
 def empty_schema() -> dict[str, Any]:
     return {"type": "object", "properties": {}, "additionalProperties": False}
 
@@ -41,6 +44,7 @@ class ActionSpec:
     local_only: bool = False
     diagnostic: bool = False
     examples: tuple[dict[str, Any], ...] = ()
+    api_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return json_copy(
@@ -55,6 +59,7 @@ class ActionSpec:
                 "local_only": self.local_only,
                 "diagnostic": self.diagnostic,
                 "examples": list(self.examples),
+                "api_version": self.api_version,
             }
         )
 

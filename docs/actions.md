@@ -51,6 +51,35 @@ Bridge services can set the config-relative `plugin_paths` array in their privat
 
 Import `ActionPlugin`, `ActionSpec`, `ActionContext` and `ActionOutcome` from `moyu_harmony_pilot.actions`. Read-only plugins implement `execute(ctx, params)`. Declare parameter and metric schemas, version, description, timeout and side-effect classification in `spec`.
 
+### Compatibility declarations
+
+Set `ActionSpec(api_version=1, ...)` to declare the action API implemented by a plugin.
+Explicit API declarations are available starting with Pilot `0.1.0.dev1`.
+The exported `ACTION_API_VERSION` constant and `harmony-pilot schema --json` report
+the host's supported API. Registration checks this declaration and rejects an
+unsupported API with `configuration_error` before action execution. Existing plugins
+that omit the field default to API v1. `plugins list`, `plugins describe` and Bridge
+`--check` include `api_version` in each action description. Plugin imports and
+constructors still run during discovery and must remain free of device interactions.
+
+Maintain three version declarations when distributing a plugin.
+
+- `api_version` identifies the action interface and execution contract. Declare the
+  implemented integer explicitly, so a host upgrade cannot silently change it.
+- `version` identifies the action's behavior and participates in the ledger request
+  fingerprint. Changing it causes reuse of an old idempotency key to fail validation.
+  Preserve the ledger and reconcile outstanding work during upgrades.
+- A packaged plugin declares its supported Pilot package range in `project.dependencies`
+  and Python range in `project.requires-python`. Test each supported Pilot release or
+  pinned development revision. Directory plugins document these requirements alongside
+  `actions.json` and deploy into an environment with those versions installed.
+
+Package dependency resolution checks the Pilot release range during installation.
+The registry checks the action API at load time. An API match covers the action
+interface, while driver methods used by the plugin also need version compatibility tests.
+
+### Parameters and execution
+
 The supported JSON Schema subset includes explicit types, closed object properties, required properties, arrays with item schemas, enums, numeric bounds and string/array length bounds. `harmony-pilot schema --json` lists the accepted keywords. Object schemas require `additionalProperties: false`. Integer parameters use JSON integer literals. Boolean values have a distinct type.
 
 Parameters, plugin metadata and individual receipts each have a 16 KiB canonical JSON limit. Nesting is limited to eight levels. Receipt metrics are declared scalar fields with at most 32 keys, 64-character key names, 128-character string values and finite numbers. Summaries are limited to 256 characters and error codes to 64 lowercase snake-case characters. Plugin authors must keep summaries, metrics and logs free of credentials, hardware serials, UI text and other personal data.

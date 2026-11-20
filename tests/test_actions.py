@@ -16,6 +16,7 @@ from unittest.mock import Mock
 import pytest
 
 from moyu_harmony_pilot.actions import (
+    ACTION_API_VERSION,
     ActionContext,
     ActionLedger,
     ActionOutcome,
@@ -377,6 +378,28 @@ def test_registry_metadata_snapshot_duplicate_and_remote_allowlist(execution):
     assert (
         "bad" not in runner.registry.describe(plugin.spec.action_id)["params_schema"]["properties"]
     )
+
+
+def test_legacy_action_spec_defaults_to_api_v1(execution):
+    registry = execution[0].registry
+    assert ACTION_API_VERSION == 1
+    assert registry.describe("example.mutate")["api_version"] == 1
+    description = registry.describe("example.mutate")
+    description["api_version"] = 2
+    assert registry.describe("example.mutate")["api_version"] == 1
+    assert run_mutation(execution).status == "succeeded"
+
+
+@pytest.mark.parametrize("api_version", [0, 2, -1, True, 1.0, "1", None])
+def test_unsupported_action_api_is_rejected_before_registration(execution, api_version):
+    plugin = execution[2]
+    plugin.spec = replace(plugin.spec, api_version=api_version)
+    registry = ActionRegistry()
+    with pytest.raises(DeviceConfigurationError, match="Unsupported action API"):
+        registry.register(plugin)
+    assert registry.list() == []
+    assert plugin.calls == []
+    assert execution[3].calls == []
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), {"large": "a" * 17000}])

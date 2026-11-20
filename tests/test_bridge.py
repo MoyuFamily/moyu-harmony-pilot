@@ -495,6 +495,7 @@ def test_configured_plugin_paths_and_contract_export_are_offline(bridge, monkeyp
     assert data["allowed_actions"] == {"phone": ["example.remote"]}
     assert [action["action_id"] for action in data["actions"]] == ["example.remote"]
     assert data["actions"][0]["remote_allowed"]
+    assert data["actions"][0]["api_version"] == 1
     for private in (worker.config.token, device.serial, str(directory)):
         assert private not in output
 
