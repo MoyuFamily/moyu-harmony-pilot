@@ -47,6 +47,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path):
             "tests/fakes.py",
             "tests/fixtures/harmony_61_home_layout.json",
             "docs/actions.md",
+            "docs/plugin-catalog.md",
             "docs/mcp.md",
             "docs/bridge-worker.md",
             "docs/remote-integration.md",

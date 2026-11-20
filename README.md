@@ -50,6 +50,8 @@ See [docs/device-setup.md](docs/device-setup.md) for installing official `hdc 3.
 - **[Requirements & Architecture Specification](docs/requirements.md)** — Scope, non-goals, responsibility boundaries, layered package design, plugin model, Agent-friendly contracts, security invariants, and roadmap.
 - **[Local Environment & Device Setup Guide](docs/device-setup.md)** — Official `hdc` installation (macOS ARM64 / Linux), Python 3.11 environment setup, HarmonyOS NEXT device prerequisites, read-only verification commands, and USB troubleshooting.
 - **[Action Plugins & Local Execution](docs/actions.md)** — Plugin discovery, parameter and receipt schemas, execution budgets, SQLite deduplication, and an external read-only example.
+- **[Plugin Template](examples/plugin-template/README.md)** — Standalone package, explicit API compatibility, installed entry-point contracts and offline CI.
+- **[Plugin Directory & Maintenance](docs/plugin-catalog.md)** — Generic examples, community registration, tested-version records and deployment lifecycle.
 - **[Pull Bridge Worker](docs/bridge-worker.md)** — Private configuration, per-device capabilities, lease cancellation, durable receipts, health probes and service templates.
 - **[Cross-machine Integration](docs/remote-integration.md)** — Host preparation, external plugin deployment, contract export, heartbeat preflight and a read-only remote integration example.
 - **[Local MCP Adapter](docs/mcp.md)** — Optional MCP v2 stdio tools, safe-mode allowlists and explicitly enabled local lab sessions.
