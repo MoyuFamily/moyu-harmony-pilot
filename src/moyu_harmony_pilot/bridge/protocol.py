@@ -121,11 +121,20 @@ def decode_object(raw: bytes) -> dict[str, Any]:
     def invalid_constant(value):
         raise ValueError
 
+    def finite_float(value):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError
+        return parsed
+
     try:
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ValueError
         value = json.loads(
-            raw.decode("utf-8"), object_pairs_hook=pairs, parse_constant=invalid_constant
+            raw.decode("utf-8"),
+            object_pairs_hook=pairs,
+            parse_constant=invalid_constant,
+            parse_float=finite_float,
         )
         if not isinstance(value, dict):
             raise ValueError

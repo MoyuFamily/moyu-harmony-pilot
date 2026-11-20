@@ -250,6 +250,57 @@ def test_lease_conflict_and_terminal_completion_conflict(bridge):
     assert not worker.store.pending()
 
 
+def test_finishing_during_renewal_skips_heartbeat_and_stops_thread(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    heartbeat = Mock()
+    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
+    post = broker.post
+
+    def finish_during_request(path, payload, *, timeout=None):
+        lease.finished.set()
+        return post(path, payload, timeout=timeout)
+
+    monkeypatch.setattr(broker, "post", finish_during_request)
+    with lease:
+        assert lease.finished.wait(1)
+    assert not lease.thread.is_alive()
+    heartbeat.assert_not_called()
+
+
+def test_shutdown_during_renewal_wait_skips_request(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, Mock())
+
+    def stop_during_wait(timeout):
+        worker.stop.set()
+        return False
+
+    monkeypatch.setattr(lease.finished, "wait", stop_during_wait)
+    lease._loop()
+    assert not broker.calls
+
+
+def test_late_renewal_does_not_revive_expired_lease(bridge, monkeypatch):
+    worker, broker, _, _, _, _ = bridge
+    job = Job.parse(job_payload())
+    lease = LeaseKeeper(job, worker.config, broker, worker.stop, Mock())
+    lease_module = importlib.import_module("moyu_harmony_pilot.bridge.lease")
+
+    def late_response(path, payload, *, timeout=None):
+        monkeypatch.setattr(lease_module, "utc_now", lambda: job.lease_expires_at)
+        return {
+            "ok": True,
+            "cancelRequested": False,
+            "leaseExpiresAt": timestamp(job.lease_expires_at + timedelta(seconds=60)),
+        }
+
+    monkeypatch.setattr(broker, "post", late_response)
+    lease.renew()
+    assert lease.lost.is_set()
+    assert lease.expires_at == job.lease_expires_at
+    assert lease.cancelled()
+
+
 def test_signal_shutdown_after_submit_records_unknown_and_restores_handlers(bridge):
     worker, broker, plugin, _, _, _ = bridge
     original = signal.getsignal(signal.SIGTERM)
@@ -291,7 +342,17 @@ def test_invalid_broker_urls_are_rejected(url):
         broker_url(url)
 
 
-@pytest.mark.parametrize("raw", [b'{"ok":true,"ok":false}', b'{"number":NaN}', b"[]", b"x" * 65537])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"ok":true,"ok":false}',
+        b'{"number":NaN}',
+        b'{"number":1e999}',
+        b'{"nested":[{"number":-1e999}]}',
+        b"[]",
+        b"x" * 65537,
+    ],
+)
 def test_broker_json_is_bounded_unambiguous_and_finite(raw):
     with pytest.raises(BridgeProtocolError):
         decode_object(raw)

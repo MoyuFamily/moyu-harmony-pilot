@@ -33,6 +33,7 @@ class LeaseKeeper:
     def cancelled(self) -> bool:
         return (
             self.stop.is_set()
+            or self.finished.is_set()
             or self.lost.is_set()
             or utc_now() >= min(self.expires_at, self.job.expires_at)
         )
@@ -52,7 +53,8 @@ class LeaseKeeper:
         )
         expires = parse_time(response.get("leaseExpiresAt"))
         if (
-            response.get("ok") is not True
+            self.cancelled()
+            or response.get("ok") is not True
             or type(response.get("cancelRequested")) is not bool
             or response["cancelRequested"]
             or expires <= utc_now()
@@ -64,7 +66,9 @@ class LeaseKeeper:
     def _loop(self) -> None:
         while not self.cancelled():
             remaining = (self.expires_at - utc_now()).total_seconds()
-            if self.finished.wait(max(0.01, min(self.config.lease_seconds, remaining / 3))):
+            if self.finished.wait(
+                max(0.01, min(self.config.lease_seconds, remaining / 3))
+            ) or self.cancelled():
                 return
             try:
                 self.renew()
