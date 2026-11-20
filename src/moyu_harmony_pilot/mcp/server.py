@@ -146,6 +146,40 @@ def create_server(adapter: PilotTools):
             """Navigate back with sensitive-screen checks and differential feedback."""
             return invoke(lambda: adapter.back(alias, layout_hash))
 
+        @server.tool(annotations=mutating)
+        async def home(alias: str, layout_hash: str) -> Any:
+            """Return to the home screen through the fixed-budget local session."""
+            return invoke(lambda: adapter.home(alias, layout_hash))
+
+        @server.tool(annotations=mutating)
+        async def long_click_ref(alias: str, ref: str, layout_hash: str) -> Any:
+            """Long press a fresh reference supporting long press."""
+            return invoke(lambda: adapter.long_click_ref(alias, ref, layout_hash))
+
+        @server.tool(annotations=mutating)
+        async def input_text_ref(alias: str, ref: str, text: str, layout_hash: str) -> Any:
+            """Input single-line text into a fresh non-sensitive editable reference."""
+            return invoke(lambda: adapter.input_text_ref(alias, ref, text, layout_hash))
+
+        @server.tool(annotations=mutating)
+        async def start_app(
+            alias: str, bundle_name: str, layout_hash: str, ability_name: str | None = None
+        ) -> Any:
+            """Start a bundle with an explicit or discovered entry ability."""
+            return invoke(lambda: adapter.start_app(alias, bundle_name, layout_hash, ability_name))
+
+        @server.tool(annotations=readonly)
+        async def wait_for(alias: str, selector: dict[str, Any]) -> Any:
+            """Wait for a selector within the remaining session budget."""
+            return invoke(lambda: adapter.wait_for(alias, selector))
+
+        @server.tool(annotations=mutating)
+        async def scroll_until(
+            alias: str, selector: dict[str, Any], direction: str = "up", max_swipes: int = 10
+        ) -> Any:
+            """Scroll a bounded number of times, observing and checking guards on every step."""
+            return invoke(lambda: adapter.scroll_until(alias, selector, direction, max_swipes))
+
     return server
 
 

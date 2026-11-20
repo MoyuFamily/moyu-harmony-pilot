@@ -31,8 +31,11 @@ class BridgeConfig:
     lease_seconds: float = 15
     request_timeout: float = 10
     plugin_paths: tuple[Path, ...] | None = None
+    max_jobs: int = 1
 
     def __post_init__(self) -> None:
+        if type(self.max_jobs) is not int or not 1 <= self.max_jobs <= 32:
+            raise DeviceConfigurationError("max_jobs must be between 1 and 32.")
         identifier(self.bridge_id)
         object.__setattr__(self, "broker_url", broker_url(self.broker_url))
         opaque(self.token, limit=8192)
@@ -59,6 +62,7 @@ class BridgeConfig:
                 "lease_seconds",
                 "request_timeout",
                 "plugin_paths",
+                "max_jobs",
             }
             if not required <= values.keys() or values.keys() - required - optional:
                 raise ValueError("fields")
@@ -108,6 +112,7 @@ class BridgeConfig:
                 lease_seconds=number(values.get("lease_seconds", 15), minimum=0.1, maximum=30),
                 request_timeout=number(values.get("request_timeout", 10), minimum=0.1, maximum=60),
                 plugin_paths=plugin_paths,
+                max_jobs=values.get("max_jobs", 1),
             )
         except Exception as exc:
             raise DeviceConfigurationError(

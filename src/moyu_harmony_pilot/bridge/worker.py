@@ -18,6 +18,7 @@ from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ActionOutcome, ActionRegistry, ActionRunner
 from moyu_harmony_pilot.bridge.client import HttpBridgeClient, JsonTransport
 from moyu_harmony_pilot.bridge.config import BridgeConfig, validate_configuration
+from moyu_harmony_pilot.bridge.executor import execute_batch
 from moyu_harmony_pilot.bridge.lease import LeaseKeeper
 from moyu_harmony_pilot.bridge.protocol import (
     MAX_MESSAGE_BYTES,
@@ -76,6 +77,9 @@ class BridgeWorker:
         env=None,
     ) -> None:
         self.config = config
+        self.registry_override = registry
+        self.environment = dict(os.environ if env is None else env)
+        self.active_aliases: set[str] = set()
         self.hdc = hdc
         self.client = client if client is not None else HttpBridgeClient(config)
         devices, self.registry = validate_configuration(config, registry=registry, env=env)
@@ -155,7 +159,7 @@ class BridgeWorker:
             return
         rows = [dict(row) for row in self.inventory]
         for row in rows:
-            if row["deviceAlias"] == active_alias:
+            if row["deviceAlias"] == active_alias or row["deviceAlias"] in self.active_aliases:
                 row.update(
                     busy=True,
                     batteryPercent=None,
@@ -316,20 +320,30 @@ class BridgeWorker:
                 "/bridge/v1/jobs/claim",
                 {
                     "bridgeId": self.config.bridge_id,
-                    "maxJobs": 1,
+                    "maxJobs": min(self.config.max_jobs, len(available)),
                     "waitSeconds": wait_seconds,
                     "availableDevices": available,
                 },
                 timeout=wait_seconds + self.config.request_timeout,
             )
             jobs = reply.get("jobs")
-            if not isinstance(jobs, list) or len(jobs) > 1:
-                raise BridgeProtocolError("Broker claim must contain at most one job.")
+            if not isinstance(jobs, list) or len(jobs) > min(self.config.max_jobs, len(available)):
+                raise BridgeProtocolError("Broker exceeded the advertised job capacity.")
             self.has_pending_jobs = bool(jobs)
-            for payload in jobs:
-                job = Job.parse(payload)
-                self.counts["claimed"] += 1
-                self._execute(job)
+            parsed = [Job.parse(payload) for payload in jobs]
+            self.counts["claimed"] += len(parsed)
+            if self.config.max_jobs == 1:
+                for job in parsed:
+                    self._execute(job)
+            else:
+                aliases = [job.device_alias for job in parsed]
+                available_aliases = {row["deviceAlias"] for row in available}
+                if (len(set(aliases)) != len(aliases) or not set(aliases) <= available_aliases
+                        or len({job.job_id for job in parsed}) != len(parsed)):
+                    raise BridgeProtocolError(
+                        "Broker must assign unique jobs to available devices."
+                    )
+                execute_batch(self, parsed)
             self.flush_receipts()
         else:
             self.has_pending_jobs = False

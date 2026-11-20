@@ -187,7 +187,8 @@ class ActionRunner:
             )
         _ = ctx.remaining_timeout
         try:
-            ledger.reserve(key)
+            ctx.inspection_metrics = dict(inspection.metrics)
+            ledger.reserve(key, inspection_metrics=ctx.inspection_metrics)
         except (Exception, KeyboardInterrupt, SystemExit):
             # An interruption can land immediately after SQLite commits its reservation.
             try:
@@ -224,3 +225,45 @@ class ActionRunner:
                 # The committed submitting row still blocks replay after a storage failure.
                 outcome = _failure(ActionBudgetExceeded(), submitted=True)
         return outcome
+
+    def reconcile(
+        self, device: HarmonyDevice, action_id: str, params: dict, *, idempotency_key: str,
+        timeout: float | None = None, note: str | None = None,
+    ) -> ActionOutcome:
+        """Confirm a prior submission read-only, or explicitly record a human verification."""
+        plugin, spec, params, seconds = self.prepare(
+            action_id, params, idempotency_key=idempotency_key, timeout=timeout
+        )
+        if not isinstance(plugin, IdempotentAction):
+            raise DeviceConfigurationError("Reconciliation requires an idempotent action.")
+        ensure_deadline_available()
+        with device.acquire_lock():
+            ledger = ActionLedger(self.state_dir / "actions.sqlite3")
+            key = ledger.make_key(
+                device.profile.serial, action_id, idempotency_key, spec.version, params
+            )
+            previous = ledger.lookup(key)
+            if previous is None:
+                raise DeviceConfigurationError("No prior submission matches this request.")
+            if previous.status != "unknown":
+                return previous
+            if note is not None:
+                outcome = ActionOutcome(summary="Completion explicitly verified by operator.")
+            else:
+                record = ledger.records(
+                    device_hash=key.device_hash, action_id=key.action_id, key_hash=key.key_hash
+                )[0]
+                ctx = ActionContext(
+                    device, time.monotonic() + seconds,
+                    inspection_metrics=record["inspection_metrics"], reconciling=True,
+                )
+                try:
+                    outcome = _bounded_call(
+                        ctx, lambda: plugin.confirm(ctx, json_copy(params)), stage="confirm"
+                    ).validate(spec)
+                except (Exception, ActionBudgetExceeded, KeyboardInterrupt, SystemExit):
+                    return previous
+                if outcome.status not in {"succeeded", "already_done"}:
+                    return previous
+            ledger.resolve(key, outcome, note=note or "Read-only plugin confirmation.")
+            return outcome

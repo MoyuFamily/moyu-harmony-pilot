@@ -15,6 +15,7 @@ chmod 600 bridge.local.json devices.local.yaml
 
 ### 关键配置规则
 
+- 可选 `max_jobs` 设置并发执行上限，范围为 1–32，默认值为 1。大于 1 时，Bridge 为不同设备启动独立执行子进程，各自拥有主线程超时计时器，父进程维护租约和持久化回执。同一物理设备继续通过共享状态目录内的设备锁保持互斥。
 - **路径解析**：`devices_config`、`state_dir`、`token_file`、`plugin_paths` 中的相对路径，均**相对于 Bridge 配置文件所在目录**解析，避免服务工作目录变化导致找不到文件。
 - **凭据加载**：优先读取环境变量 `HARMONY_PILOT_BRIDGE_TOKEN`（或自定义的 `token_env`）；环境变量为空时，从权限为 `0600` 的 `token_file` 读取。切勿将运行配置和凭据提交到版本库。
 - **插件目录（`plugin_paths`）**：填写包含 `actions.json` 的外部插件目录数组。显式配置后会覆盖当前进程的 `HARMONY_PILOT_PLUGIN_PATHS` 环境变量（配置为空数组 `[]` 表示禁用目录发现）；省略该字段则沿用环境变量。无论如何配置，已安装 Python 包的 entry point 仍会参与发现，并统一受设备白名单限制。

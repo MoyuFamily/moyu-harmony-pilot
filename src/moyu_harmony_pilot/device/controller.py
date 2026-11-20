@@ -6,6 +6,7 @@ import re
 from contextlib import AbstractContextManager
 from pathlib import Path
 
+from moyu_harmony_pilot.device.apps import AppInfo, parse_app_info, parse_app_list, validate_bundle
 from moyu_harmony_pilot.device.diagnostics import (
     DiagnosticsStore,
     enforce_file_mode_0600,
@@ -227,18 +228,49 @@ class HarmonyDevice:
     def start_app(
         self,
         bundle_name: str,
-        ability_name: str = "EntryAbility",
+        ability_name: str | None = "EntryAbility",
         *,
         timeout: float = 15.0,
+        module_name: str | None = None,
     ) -> None:
         """Start an application ability via official `aa start`."""
         valid_bundle = _validate_identifier(bundle_name, field_name="bundle_name")
+        if ability_name is None:
+            info = self.app_info(valid_bundle, timeout=timeout)
+            if info is None or info.entry_ability is None:
+                raise DeviceConfigurationError("Specify an ability when the entry is ambiguous.")
+            ability_name = info.entry_ability
+            module_name = module_name or info.entry_module
         valid_ability = _validate_identifier(ability_name, field_name="ability_name")
+        argv = ["aa", "start", "-b", valid_bundle, "-a", valid_ability]
+        if module_name is not None:
+            argv.extend(["-m", _validate_identifier(module_name, field_name="module_name")])
         self._hdc.shell(
             self._profile.serial,
-            ["aa", "start", "-b", valid_bundle, "-a", valid_ability],
+            argv,
             timeout=timeout,
         )
+
+    def list_apps(self, *, timeout: float = 15.0) -> list[str]:
+        result = self._hdc.shell(self._profile.serial, ["bm", "dump", "-a"], timeout=timeout)
+        return parse_app_list(result.stdout)
+
+    def app_info(self, bundle_name: str, *, timeout: float = 15.0) -> AppInfo | None:
+        bundle = validate_bundle(bundle_name)
+        if bundle not in self.list_apps(timeout=timeout):
+            return None
+        result = self._hdc.shell(
+            self._profile.serial, ["bm", "dump", "-n", bundle], timeout=timeout
+        )
+        return parse_app_info(result.stdout, bundle)
+
+    def install_app(self, packages: list[str | Path], *, timeout: float = 120.0) -> None:
+        """Submit installation once. Use ActionRunner for durable idempotency."""
+        self._hdc.install(self._profile.serial, packages, timeout=timeout)
+
+    def uninstall_app(self, bundle_name: str, *, timeout: float = 120.0) -> None:
+        """Submit removal once. Use ActionRunner for durable idempotency."""
+        self._hdc.uninstall(self._profile.serial, bundle_name, timeout=timeout)
 
     def force_stop(self, bundle_name: str, *, timeout: float = 15.0) -> None:
         """Force-stop an application via official `aa force-stop`."""

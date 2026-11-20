@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
+from moyu_harmony_pilot.ui.errors import UiInvalidInputError
 from moyu_harmony_pilot.ui.models import UiNode, UiTree
 
 
@@ -78,6 +79,39 @@ class UiSelector:
             ):
                 return False
         return True
+
+
+def selector_from_dict(value: dict, *, depth: int = 0) -> UiSelector:
+    """Validate external selector objects before constructing recursive queries."""
+    names = {field.name for field in fields(UiSelector)}
+    if not isinstance(value, dict) or value.keys() - names or depth > 4:
+        raise UiInvalidInputError("Invalid or excessively nested selector.")
+    converted = {}
+    booleans = {"clickable", "long_clickable", "scrollable", "enabled", "visible",
+                "checked", "selected", "focused"}
+    for key, item in value.items():
+        if item is None:
+            converted[key] = None
+        elif key in {"parent", "child"}:
+            converted[key] = selector_from_dict(item, depth=depth + 1)
+        elif key in booleans:
+            if type(item) is not bool:
+                raise UiInvalidInputError("Selector flags must be booleans.")
+            converted[key] = item
+        elif key == "index":
+            if type(item) is not int or item < 0:
+                raise UiInvalidInputError("Selector index must be non-negative.")
+            converted[key] = item
+        else:
+            if not isinstance(item, str) or len(item) > 512:
+                raise UiInvalidInputError("Selector text must contain at most 512 characters.")
+            if key == "text_regex":
+                try:
+                    re.compile(item)
+                except re.error as exc:
+                    raise UiInvalidInputError("Invalid selector regular expression.") from exc
+            converted[key] = item
+    return UiSelector(**converted)
 
 
 def _iter_descendants(node: UiNode) -> list[tuple[UiNode, UiNode]]:

@@ -15,7 +15,9 @@ from moyu_harmony_pilot.device import (
     HarmonyDevice,
     HumanRequiredError,
 )
+from moyu_harmony_pilot.device.apps import validate_bundle
 from moyu_harmony_pilot.ui import CompactSnapshot, UiSelector, diff_snapshots, find_first
+from moyu_harmony_pilot.ui.errors import UiElementNotFoundError
 from moyu_harmony_pilot.vision import PopupWatcher
 
 T = TypeVar("T")
@@ -70,7 +72,34 @@ class InteractionSession:
     def back(self, *, layout_hash: str) -> dict:
         return self._step("back", layout_hash=layout_hash)
 
-    def _step(self, action: str, *, layout_hash: str, ref: str = "", direction: str = "") -> dict:
+    def home(self, *, layout_hash: str) -> dict:
+        return self._step("home", layout_hash=layout_hash)
+
+    def long_click_ref(self, ref: str, *, layout_hash: str) -> dict:
+        return self._step("long_click", layout_hash=layout_hash, ref=ref)
+
+    def input_text_ref(self, ref: str, text: str, *, layout_hash: str) -> dict:
+        if (not isinstance(text, str) or len(text) > 4096
+                or any(char in text for char in ("\x00", "\n", "\r"))):
+            raise DeviceConfigurationError(
+                "Input must be a single line of at most 4096 characters."
+            )
+        return self._step("input_text", layout_hash=layout_hash, ref=ref, text=text)
+
+    def start_app(
+        self, bundle_name: str, *, ability_name: str | None = None, layout_hash: str
+    ) -> dict:
+        validate_bundle(bundle_name)
+        if ability_name is not None:
+            validate_bundle(ability_name)
+        return self._step(
+            "start_app", layout_hash=layout_hash, bundle_name=bundle_name, ability_name=ability_name
+        )
+
+    def _step(
+        self, action: str, *, layout_hash: str, ref: str = "", direction: str = "",
+        text: str = "", bundle_name: str = "", ability_name: str | None = None,
+    ) -> dict:
         if self._needs_observation:
             raise DeviceConfigurationError("Observe the UI after an uncertain interaction.")
         submitted = False
@@ -83,18 +112,34 @@ class InteractionSession:
             if before.sensitive_signals:
                 raise HumanRequiredError("Sensitive screen requires human intervention.")
             self.device.assert_thermal_safe(timeout=self.context.remaining_timeout)
-            if action == "click":
+            if action in {"click", "long_click", "input_text"}:
                 element = before.get_by_ref(ref)
-                if element is None or not element.clickable or not element.enabled:
+                if element is None or not element.enabled or not element.bounds.is_valid:
                     raise DeviceConfigurationError(
-                        "Reference must select an enabled clickable element."
+                        "Reference must select an enabled element."
                     )
+                if action == "click" and not element.clickable:
+                    raise DeviceConfigurationError("Reference must be clickable.")
+                if action == "long_click" and not element.long_clickable:
+                    raise DeviceConfigurationError("Reference must support long press.")
+                if (
+                    action == "input_text"
+                    and element.type.rsplit(".", 1)[-1] not in {"TextInput", "TextArea", "Search"}
+                ):
+                    raise DeviceConfigurationError("Reference must select an editable element.")
                 x, y = element.center
                 width, height = before.screen_size
                 if not 0 <= x < width or not 0 <= y < height:
                     raise DeviceConfigurationError("Reference center is outside the display.")
                 submitted = True
-                self.device.ui.click_ref(before, ref, timeout=self.context.remaining_timeout)
+                if action == "input_text":
+                    self.device.ui.input_text_ref(
+                        before, ref, text, timeout=self.context.remaining_timeout
+                    )
+                elif action == "long_click":
+                    self.device.ui.long_click(x, y, timeout=self.context.remaining_timeout)
+                else:
+                    self.device.ui.click_ref(before, ref, timeout=self.context.remaining_timeout)
             elif action == "swipe":
                 width, height = before.screen_size
                 points = {
@@ -111,9 +156,23 @@ class InteractionSession:
                 ]
                 submitted = True
                 self.device.ui.swipe(*coordinates, timeout=self.context.remaining_timeout)
+            elif action == "start_app":
+                ability = ability_name
+                module = None
+                if ability is None:
+                    info = self.device.app_info(bundle_name, timeout=self.context.remaining_timeout)
+                    if info is None or info.entry_ability is None:
+                        raise DeviceConfigurationError("Specify an unambiguous entry ability.")
+                    ability, module = info.entry_ability, info.entry_module
+                submitted = True
+                self.device.start_app(
+                    bundle_name, ability, module_name=module, timeout=self.context.remaining_timeout
+                )
             else:
                 submitted = True
-                self.device.ui.key_event("Back", timeout=self.context.remaining_timeout)
+                self.device.ui.key_event(
+                    "Home" if action == "home" else "Back", timeout=self.context.remaining_timeout
+                )
             _, after = self._capture()
             if after.sensitive_signals:
                 raise HumanRequiredError(
@@ -138,6 +197,7 @@ class InteractionSession:
         try:
             return self._locked(perform)
         except HumanRequiredError:
+            self._needs_observation = submitted
             raise
         except Exception as exc:
             if submitted:
@@ -153,10 +213,7 @@ class InteractionSession:
         if not math.isfinite(interval) or interval < 0:
             raise DeviceConfigurationError("Polling interval must be finite and non-negative.")
         while True:
-            tree, snapshot = self._locked(self._capture)
-            if snapshot.sensitive_signals:
-                raise HumanRequiredError("Sensitive screen requires human intervention.")
-            node = find_first(tree, selector)
+            snapshot, node = self._locked(lambda: self._find(selector))
             if node is not None:
                 return node
             ref = watcher.choose(snapshot) if watcher is not None else None
@@ -168,3 +225,24 @@ class InteractionSession:
                 raise DeviceError(
                     "Local interaction deadline exhausted.", code="action_budget_exceeded"
                 ) from exc
+
+    def scroll_until(
+        self, selector: UiSelector, *, direction: str = "up", max_swipes: int = 10
+    ):
+        if type(max_swipes) is not int or not 0 <= max_swipes <= 100:
+            raise DeviceConfigurationError("max_swipes must be between 0 and 100.")
+        if direction not in {"up", "down", "left", "right"}:
+            raise DeviceConfigurationError("Choose an up, down, left, or right swipe.")
+        for attempt in range(max_swipes + 1):
+            snapshot, node = self._locked(lambda: self._find(selector))
+            if node is not None:
+                return node
+            if attempt < max_swipes:
+                self.swipe(direction, layout_hash=snapshot.layout_hash)
+        raise UiElementNotFoundError("Element was not found within the scrolling budget.")
+
+    def _find(self, selector: UiSelector):
+        tree, snapshot = self._capture()
+        if snapshot.sensitive_signals:
+            raise HumanRequiredError("Sensitive screen requires human intervention.")
+        return snapshot, find_first(tree, selector)

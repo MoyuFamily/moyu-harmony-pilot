@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import tempfile
 import time
@@ -119,13 +120,21 @@ class UiDriver:
                 raise UiInvalidInputError(f"Invalid display_id: {display_id!r}")
             argv.extend(["-d", str(display_id)])
 
-        with self._hdc.remote_tmp_file(self._target, "layout", ".json") as remote_path:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise UiInvalidInputError("Layout timeout must be positive and finite.")
+        deadline = time.monotonic() + timeout
+        with self._hdc.remote_tmp_file(
+            self._target, "layout", ".json", cleanup_timeout=min(timeout, 1.0)
+        ) as remote_path:
             dump_argv = [*argv, "-p", remote_path]
             self._run_uitest(dump_argv, timeout=timeout)
 
             with tempfile.TemporaryDirectory(prefix="moyu_pilot_ui_") as tmp_dir:
                 local_path = Path(tmp_dir) / "layout.json"
-                self._hdc.recv_file(self._target, remote_path, local_path, timeout=timeout)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UiTimeoutError("Layout capture deadline exhausted.")
+                self._hdc.recv_file(self._target, remote_path, local_path, timeout=remaining)
                 return local_path.read_text(encoding="utf-8", errors="replace")
 
     def dump_tree(
@@ -187,17 +196,34 @@ class UiDriver:
         *,
         timeout: float = 10.0,
         interval: float = 0.5,
+        bundle_name: str | None = None,
+        window_id: int | None = None,
+        display_id: int | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> UiNode:
         """Poll `dump_tree()` until `selector` matches or `timeout` seconds elapse."""
-        if timeout < 0 or interval < 0:
+        if not math.isfinite(timeout) or not math.isfinite(interval) or timeout < 0 or interval < 0:
             raise UiInvalidInputError("timeout and interval must be non-negative.")
-        deadline = clock() + timeout
-        while True:
-            tree = self.dump_tree()
+        if timeout == 0:
+            tree = self.dump_tree(
+                bundle_name=bundle_name, window_id=window_id, display_id=display_id
+            )
             found = find_first(tree, selector)
             if found is not None:
+                return found
+            raise UiTimeoutError("Selector was absent in the single requested observation.")
+        deadline = clock() + timeout
+        while True:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise UiTimeoutError("Timed out waiting for selector.")
+            tree = self.dump_tree(
+                timeout=remaining, bundle_name=bundle_name, window_id=window_id,
+                display_id=display_id,
+            )
+            found = find_first(tree, selector)
+            if found is not None and clock() <= deadline:
                 return found
             remaining = deadline - clock()
             if remaining <= 0:
@@ -212,17 +238,33 @@ class UiDriver:
         *,
         timeout: float = 10.0,
         interval: float = 0.5,
+        bundle_name: str | None = None,
+        window_id: int | None = None,
+        display_id: int | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> bool:
         """Poll `dump_tree()` until `selector` no longer matches any node."""
-        if timeout < 0 or interval < 0:
+        if not math.isfinite(timeout) or not math.isfinite(interval) or timeout < 0 or interval < 0:
             raise UiInvalidInputError("timeout and interval must be non-negative.")
+        if timeout == 0:
+            tree = self.dump_tree(
+                bundle_name=bundle_name, window_id=window_id, display_id=display_id
+            )
+            if find_first(tree, selector) is None:
+                return True
+            raise UiTimeoutError("Selector remained in the single requested observation.")
         deadline = clock() + timeout
         while True:
-            tree = self.dump_tree()
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise UiTimeoutError("Timed out waiting for selector to disappear.")
+            tree = self.dump_tree(
+                timeout=remaining, bundle_name=bundle_name, window_id=window_id,
+                display_id=display_id,
+            )
             found = find_first(tree, selector)
-            if found is None:
+            if found is None and clock() <= deadline:
                 return True
             remaining = deadline - clock()
             if remaining <= 0:
@@ -434,6 +476,8 @@ class UiDriver:
 
     def input_text(self, x: int, y: int, text: str, *, timeout: float = 15.0) -> None:
         """Focus `(x, y)` and enter text via `uitest uiInput inputText`."""
+        if not isinstance(text, str) or len(text) > 4096:
+            raise UiInvalidInputError("Input must be a string of at most 4096 characters.")
         if "\x00" in text or "\n" in text or "\r" in text:
             raise UiInvalidInputError("inputText value must not contain NUL or newline characters.")
         self._ui_input(
@@ -445,6 +489,19 @@ class UiDriver:
             ],
             timeout=timeout,
         )
+
+    def input_text_ref(
+        self, snapshot: CompactSnapshot, ref: str, text: str, *, timeout: float = 15
+    ) -> None:
+        element = snapshot.get_by_ref(ref)
+        if (snapshot.sensitive_signals or element is None or not element.enabled
+                or element.type.rsplit(".", 1)[-1] not in {"TextInput", "TextArea", "Search"}):
+            raise UiInvalidInputError("Reference must select a non-sensitive editable element.")
+        x, y = element.center
+        width, height = snapshot.screen_size
+        if not element.bounds.is_valid or not (0 <= x < width and 0 <= y < height):
+            raise UiInvalidInputError("Input reference is outside the display.")
+        self.input_text(x, y, text, timeout=timeout)
 
     def key_event(self, key: str | int, *, timeout: float = 15.0) -> None:
         """Send a hardware/navigation key event via `uitest uiInput keyEvent`."""

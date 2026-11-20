@@ -32,11 +32,17 @@ For authorized side effects, preserve a stable idempotency key for the same logi
 
 ## Local interactive work
 
-Keep interaction within the user-authorized task. MCP defaults to observation tools and explicitly allowlisted actions. `--local-lab` adds `lab_observe`, `click_ref`, directional `swipe` and `back` with a fixed session budget.
+Keep interaction within the user-authorized task. MCP defaults to observation tools and explicitly allowlisted actions. `--local-lab` adds `lab_observe`, `click_ref`, directional `swipe`, `back`, `home`, `long_click_ref`, `input_text_ref`, `start_app`, `wait_for` and `scroll_until` with a fixed session budget.
 
 Start with `lab_observe`, then pass its `layout_hash` with the selected reference or navigation step. Read the returned snapshot and `changed` feedback before the next step. A stale hash or uncertain step requires fresh observation. Report exhausted budgets with the last known state and remaining work.
 
 If `sensitive_signals` or `human_required` indicates a password, verification challenge, payment confirmation or permission prompt, stop and hand the indicated step to the user. Keep screenshots, OCR results and layout text local.
+
+CLI interaction uses `interact SUBCOMMAND --local-lab` with a fresh budget per invocation. Scroll search observes internally before each swipe.
+
+For authorized HAP deployment, use `apps install` with a stable idempotency key. An `unknown` result can be checked with `ledger reconcile` using the original action parameters. Record verified human completion with `ledger resolve --note`. `apps list` and `apps info` provide read-only bundle discovery.
+
+Use `inspect --out PRIVATE.html` for a local visual inspection artifact and `ledger report` or `report --input RESULT.json` for execution reports. Keep these artifacts private.
 
 ## Interpret outcomes
 

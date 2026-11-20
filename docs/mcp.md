@@ -45,10 +45,10 @@ harmony-pilot-mcp --config devices.local.json --allow-action device.health
 harmony-pilot-mcp --config devices.local.json --local-lab --max-steps 20 --timeout 60
 ```
 
-开启后额外提供 4 个受限交互工具：`lab_observe`、`click_ref`、`swipe`、`back`。
+开启后额外提供 `lab_observe`、`click_ref`、`swipe`、`back`、`input_text_ref`、`long_click_ref`、`home`、`start_app`、`wait_for`、`scroll_until`。文本输入、启动应用和直接交互均复用会话护栏，等待与滚动查找接受声明式选择器对象。
 
 - **固定生命周期预算**：某个设备别名首次调用交互工具时开始计时，在整个服务进程生命周期内共享这份步数与耗时预算，工具调用本身无法自行续期。
-- **新鲜布局校验**：先调用 `lab_observe` 获取当前 `layout_hash`，后续每步操作都必须带上该哈希。底层 `InteractionSession` 会重新校验引用有效性、检测敏感界面与电池温度，执行后返回最新快照以及布局、前台包名和焦点变化差分。
+- **新鲜布局校验**：先调用 `lab_observe` 获取当前 `layout_hash`，直接交互携带该哈希。`scroll_until` 会在每次滑动前内部重新观测。底层 `InteractionSession` 校验引用有效性、敏感界面和电池温度，执行后返回最新快照以及布局、前台包名和焦点变化差分。
 - **不确定状态熔断**：若输入后无法确认页面结果，会话会要求先重新观测再继续操作。
 - **串行执行说明**：服务通过 stdio 通信并在主线程执行回调，以保证 POSIX 定时器预算正常工作。如需同时长期操作多台设备，请为不同设备启动独立进程，并在涉及同一物理设备时共用同一个 `--state-dir`。
 

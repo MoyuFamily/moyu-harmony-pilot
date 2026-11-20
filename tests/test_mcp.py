@@ -205,7 +205,10 @@ def test_lab_session_tools_differences_and_fixed_budget(adapter):
     facade.max_steps = 3
     server = create_server(facade)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
-    assert {"lab_observe", "click_ref", "swipe", "back"} <= names
+    assert {
+        "lab_observe", "click_ref", "swipe", "back", "home", "input_text_ref",
+        "long_click_ref", "start_app", "wait_for", "scroll_until",
+    } <= names
     before = invoke(server, "lab_observe", {"alias": "phone"})["data"]["snapshot"]
     ref = next(element["ref"] for element in before["elements"] if element.get("clickable"))
     state.layouts.append(make_second_page_layout_json())
@@ -237,6 +240,32 @@ def test_sensitive_lab_input_and_uncertain_step_require_observation(adapter):
     result = invoke(server, "back", {"alias": "phone", "layout_hash": observed["layout_hash"]})
     assert result["error"]["code"] == "human_required"
     assert result["error"]["hint"]
+
+
+def test_new_lab_tools_use_real_shared_session(adapter):
+    facade, state, _, _ = adapter
+    facade.local_lab = True
+    facade.max_steps = 20
+    state.layouts = [json.dumps({
+        "attributes": {"type": "Root", "bounds": "[0,0][400,800]"},
+        "children": [{"attributes": {
+            "type": "TextInput", "id": "search", "bounds": "[10,20][390,100]",
+            "clickable": "true", "longClickable": "true", "enabled": "true",
+        }}],
+    })]
+    server = create_server(facade)
+    snapshot = invoke(server, "lab_observe", {"alias": "phone"})["data"]["snapshot"]
+    element = next(item for item in snapshot["elements"] if item.get("id") == "search")
+    arguments = {"alias": "phone", "layout_hash": snapshot["layout_hash"]}
+    assert invoke(server, "input_text_ref", {**arguments, "ref": element["ref"],
+                                              "text": "中文查询"})["ok"]
+    assert invoke(server, "long_click_ref", {**arguments, "ref": element["ref"]})["ok"]
+    assert invoke(server, "home", arguments)["ok"]
+    assert invoke(server, "start_app", {**arguments, "bundle_name": "com.example.demo",
+                                         "ability_name": "EntryAbility"})["ok"]
+    assert invoke(server, "wait_for", {"alias": "phone", "selector": {"id": "search"}})["ok"]
+    assert invoke(server, "scroll_until", {"alias": "phone", "selector": {"id": "search"},
+                                            "max_swipes": 0})["ok"]
 
 
 def test_real_stdio_mcp_handshake_tools_and_invocation(tmp_path):

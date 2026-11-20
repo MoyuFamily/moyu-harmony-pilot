@@ -141,3 +141,39 @@ class PilotTools:
 
     def back(self, alias: str, layout_hash: str) -> dict:
         return self._session(alias).back(layout_hash=layout_hash)
+
+    def home(self, alias: str, layout_hash: str) -> dict:
+        return self._session(alias).home(layout_hash=layout_hash)
+
+    def long_click_ref(self, alias: str, ref: str, layout_hash: str) -> dict:
+        return self._session(alias).long_click_ref(ref, layout_hash=layout_hash)
+
+    def input_text_ref(self, alias: str, ref: str, text: str, layout_hash: str) -> dict:
+        return self._session(alias).input_text_ref(ref, text, layout_hash=layout_hash)
+
+    def start_app(
+        self, alias: str, bundle_name: str, layout_hash: str, ability_name: str | None = None
+    ) -> dict:
+        return self._session(alias).start_app(
+            bundle_name, ability_name=ability_name, layout_hash=layout_hash
+        )
+
+    def wait_for(self, alias: str, selector: dict) -> dict:
+        from moyu_harmony_pilot.ui.selector import selector_from_dict
+
+        node = self._session(alias).wait_for(selector_from_dict(selector))
+        return {
+            "id": node.id, "type": node.type, "text": node.text, "bounds": node.bounds.to_list(),
+        }
+
+    def scroll_until(
+        self, alias: str, selector: dict, direction: str = "up", max_swipes: int = 10
+    ) -> dict:
+        from moyu_harmony_pilot.ui.selector import selector_from_dict
+
+        node = self._session(alias).scroll_until(
+            selector_from_dict(selector), direction=direction, max_swipes=max_swipes
+        )
+        return {
+            "id": node.id, "type": node.type, "text": node.text, "bounds": node.bounds.to_list(),
+        }

@@ -22,6 +22,11 @@ from moyu_harmony_pilot.bridge.config import validate_configuration
 from moyu_harmony_pilot.bridge.worker import health_status
 from moyu_harmony_pilot.cli.codes import ExitCode, classify_exception
 from moyu_harmony_pilot.cli.envelope import CliEnvelope, error_envelope, ok_envelope
+from moyu_harmony_pilot.cli.operations import (
+    OPERATION_SCHEMAS,
+    add_operation_parsers,
+    run_operation,
+)
 from moyu_harmony_pilot.cli.schema import build_cli_schema
 from moyu_harmony_pilot.device import (
     DeviceConfigurationError,
@@ -343,6 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_mode.add_argument("--health", action="store_true", help="Probe heartbeat freshness.")
 
+    add_operation_parsers(subparsers, shared)
     return parser
 
 
@@ -352,6 +358,7 @@ def _detect_json_flag(argv: Sequence[str]) -> bool:
 
 def _detect_command_name(argv: Sequence[str]) -> str:
     known = {"devices", "doctor", "dump-ui", "screenshot", "schema", "plugins", "run", "serve"}
+    known.update(OPERATION_SCHEMAS)
     for token in argv:
         if token in known:
             return token
@@ -951,6 +958,9 @@ def main(
         elif command == "serve":
             with redirect_stdout(err), redirect_stderr(err):
                 exit_code, data, human = _cmd_serve(args, transport=transport, env=env)
+        elif command in OPERATION_SCHEMAS:
+            with redirect_stdout(err), redirect_stderr(err):
+                exit_code, data, human = run_operation(args, transport=transport, cwd=cwd, env=env)
         else:
             raise DeviceConfigurationError(f"Unsupported command: {command!r}")
 
@@ -962,8 +972,8 @@ def main(
                     error_envelope(
                         command,
                         code=(data.get("error_code") or data["status"])
-                        if command == "run" else "check_failed",
-                        message=data["summary"] if command == "run"
+                        if "status" in data else "check_failed",
+                        message=data["summary"] if "summary" in data
                         else f"Command `{command}` reported failing checks.",
                         retryable=False,
                         hint={

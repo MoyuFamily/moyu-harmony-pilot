@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from moyu_harmony_pilot.actions.apps import AppInstall, AppUninstall
 from moyu_harmony_pilot.actions.models import ActionContext, ActionOutcome, ActionPlugin, ActionSpec
 
 
@@ -107,4 +108,4 @@ class UiInspect(ActionPlugin):
 
 
 def builtin_plugins() -> tuple[ActionPlugin, ...]:
-    return DevicePing(), DeviceHealth(), UiInspect()
+    return DevicePing(), DeviceHealth(), UiInspect(), AppInstall(), AppUninstall()

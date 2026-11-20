@@ -43,8 +43,9 @@ class ActionLedger:
         finally:
             os.close(fd)
         with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise DeviceConfigurationError("Unsupported action ledger schema version.")
             db.execute("""CREATE TABLE IF NOT EXISTS actions (
                 device_hash TEXT NOT NULL,
@@ -57,7 +58,17 @@ class ActionLedger:
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(device_hash, action_id, key_hash)
             )""")
-            db.execute("PRAGMA user_version = 1")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(actions)")}
+            if "inspection_metrics" not in columns:
+                db.execute(
+                    "ALTER TABLE actions ADD COLUMN inspection_metrics TEXT NOT NULL DEFAULT '{}'"
+                )
+            db.execute("PRAGMA user_version = 2")
+            db.execute("""CREATE TABLE IF NOT EXISTS resolutions (
+                device_hash TEXT NOT NULL, action_id TEXT NOT NULL, key_hash TEXT NOT NULL,
+                request_hash TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL,
+                resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=5.0)
@@ -106,14 +117,15 @@ class ActionLedger:
             )
             return outcome
 
-    def reserve(self, key: LedgerKey) -> None:
+    def reserve(self, key: LedgerKey, *, inspection_metrics: dict | None = None) -> None:
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 db.execute(
-                    "INSERT INTO actions(device_hash, action_id, key_hash, request_hash, status) "
-                    "VALUES(?, ?, ?, ?, 'submitting')",
-                    (*key.identity, key.request_hash),
+                    "INSERT INTO actions(device_hash, action_id, key_hash, request_hash, status, "
+                    "inspection_metrics) VALUES(?, ?, ?, ?, 'submitting', ?)",
+                    (*key.identity, key.request_hash,
+                     json.dumps(inspection_metrics or {}, allow_nan=False)),
                 )
             except sqlite3.IntegrityError as exc:
                 raise DeviceConfigurationError("Action already has a durable reservation.") from exc
@@ -138,3 +150,64 @@ class ActionLedger:
             )
             if updated.rowcount != 1:
                 raise DeviceConfigurationError("Action reservation changed during execution.")
+
+    def records(
+        self, *, device_hash: str | None = None, action_id: str | None = None,
+        status: str | None = None, key_hash: str | None = None, limit: int = 100, offset: int = 0,
+    ) -> list[dict]:
+        if (type(limit) is not int or not 1 <= limit <= 1000
+                or type(offset) is not int or offset < 0):
+            raise DeviceConfigurationError("Invalid ledger page bounds.")
+        filters = {"device_hash": device_hash, "action_id": action_id,
+                   "status": status, "key_hash": key_hash}
+        clauses = [name + "=?" for name, value in filters.items() if value is not None]
+        values = [value for value in filters.values() if value is not None]
+        query = "SELECT * FROM actions"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC, device_hash, action_id, key_hash LIMIT ? OFFSET ?"
+        with closing(self._connect()) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(query, (*values, limit, offset)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["receipt"] = json.loads(item["receipt"]) if item["receipt"] else None
+            item["inspection_metrics"] = json.loads(item["inspection_metrics"])
+            result.append(item)
+        return result
+
+    def resolve(self, key: LedgerKey, outcome: ActionOutcome, *, note: str) -> None:
+        """Conclude an uncertain reservation under the physical device lock."""
+        payload = outcome.to_dict()
+        if payload["status"] not in {"succeeded", "already_done"}:
+            raise DeviceConfigurationError("Resolution must confirm successful completion.")
+        if not isinstance(note, str) or not 1 <= len(note.strip()) <= 256:
+            raise DeviceConfigurationError("Resolution requires a 1–256 character audit note.")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            updated = db.execute(
+                "UPDATE actions SET status=?, receipt=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE device_hash=? AND action_id=? AND key_hash=? AND request_hash=? "
+                "AND status IN ('submitting', 'unknown')",
+                (payload["status"], json.dumps(payload, allow_nan=False),
+                 *key.identity, key.request_hash),
+            )
+            if updated.rowcount != 1:
+                raise DeviceConfigurationError("No matching uncertain reservation to resolve.")
+            db.execute(
+                "INSERT INTO resolutions"
+                "(device_hash, action_id, key_hash, request_hash, status, note) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (*key.identity, key.request_hash, payload["status"], note.strip()),
+            )
+
+    def prune(self, *, older_than_days: int) -> int:
+        if type(older_than_days) is not int or older_than_days < 1:
+            raise DeviceConfigurationError("Retention must be at least one day.")
+        with closing(self._connect()) as db, db:
+            deleted = db.execute(
+                "DELETE FROM actions WHERE status IN ('succeeded', 'already_done') "
+                "AND updated_at < datetime('now', ?)", (f"-{older_than_days} days",),
+            )
+            return deleted.rowcount

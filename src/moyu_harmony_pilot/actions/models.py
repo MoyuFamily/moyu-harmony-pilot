@@ -144,6 +144,8 @@ class ActionContext:
     steps: int = 0
     cancelled: Callable[[], bool] | None = None
     on_stage: Callable[[str], None] | None = None
+    inspection_metrics: dict[str, int | float | str | bool | None] = field(default_factory=dict)
+    reconciling: bool = False
 
     @property
     def remaining_timeout(self) -> float:

@@ -9,6 +9,7 @@ from moyu_harmony_pilot.actions import ACTION_API_VERSION, ActionStatus
 from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES, SCHEMA_KEYWORDS
 from moyu_harmony_pilot.cli.codes import EXIT_CODE_DESCRIPTIONS
 from moyu_harmony_pilot.cli.envelope import SCHEMA_VERSION
+from moyu_harmony_pilot.cli.operations import OPERATION_SCHEMAS
 from moyu_harmony_pilot.device import ScreenState
 from moyu_harmony_pilot.hdc import ConnectionState
 
@@ -24,7 +25,7 @@ SENSITIVE_SIGNAL_ENUM: tuple[str, ...] = (
 
 def build_cli_schema() -> dict[str, Any]:
     """Return the complete machine-readable CLI contract for zero-guess Agent invocation."""
-    return {
+    schema = {
         "schema_version": SCHEMA_VERSION,
         "pilot_version": __version__,
         "program": "harmony-pilot",
@@ -417,3 +418,8 @@ def build_cli_schema() -> dict[str, Any]:
             },
         },
     }
+    schema["commands"].update(OPERATION_SCHEMAS)
+    schema["bridge_config"]["properties"]["max_jobs"] = {
+        "type": "integer", "minimum": 1, "maximum": 32, "default": 1,
+    }
+    return schema

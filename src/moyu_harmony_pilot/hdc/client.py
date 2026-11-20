@@ -310,6 +310,40 @@ class HdcClient:
         result = _effective_result(raw_result, is_file_transfer=True)
         _raise_for_result(result, context="hdc file send")
 
+    def install(
+        self, target: str, packages: Sequence[str | Path], *, timeout: float = 120.0
+    ) -> None:
+        """Install/update one or more local HAPs using the official host command."""
+        if isinstance(packages, (str, bytes, Path)) or not 1 <= len(packages) <= 32:
+            raise HdcInvalidArgumentError("Provide between 1 and 32 HAP paths.")
+        paths = [Path(package).expanduser().resolve() for package in packages]
+        if any(path.suffix.lower() != ".hap" or not path.is_file() for path in paths):
+            raise HdcInvalidArgumentError("Every package must be an existing HAP file.")
+        self._package_command(
+            target, ["install", *(str(path) for path in paths)], "install", timeout
+        )
+
+    def uninstall(self, target: str, bundle_name: str, *, timeout: float = 120.0) -> None:
+        """Uninstall a named bundle once, without transport-level retries."""
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,127}", bundle_name):
+            raise HdcInvalidArgumentError("Invalid bundle name.")
+        self._package_command(target, ["uninstall", bundle_name], "uninstall", timeout)
+
+    def _package_command(
+        self, target: str, argv: list[str], operation: str, timeout: float
+    ) -> None:
+        result = _effective_result(
+            self._transport.execute(argv, target=_validate_target(target), timeout=timeout)
+        )
+        _raise_for_result(result, context=f"hdc {operation}")
+        acknowledged = re.search(rf"\b{operation} bundle successfully\b", result.stdout, re.I)
+        failed = re.search(r"\b(?:error|failed|failure)\b", result.combined_output, re.I)
+        if not acknowledged or failed:
+            raise HdcCommandError(
+                "Package operation did not return a success acknowledgement.",
+                result=result, retryable=False,
+            )
+
     def cleanup_remote_tmp(
         self,
         target: str,

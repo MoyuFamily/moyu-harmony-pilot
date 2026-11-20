@@ -119,7 +119,7 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 - **防重放与崩溃恢复**：
   - 已确认完成的记录，再次调用会直接短路返回 `already_done`，不会重复唤醒手机或调用插件；
   - 提交阶段发生报错、超时、中断、无法确认或落盘失败，均会落为 `unknown`；进程重启后，持锁检查到遗留的 `submitting` 记录也会自动恢复为 `unknown`；
-  - 对 `unknown` 记录重复使用同一幂等键不会自动重放 `submit()`，只会持续返回 `unknown`，需要通过只读复核或人工核对处理（自动化对账与运维核销命令已纳入 [后续路线图](roadmap.md)）。
+  - 对 `unknown` 记录重复使用同一幂等键会持续返回 `unknown`。可通过 `ledger reconcile` 调用只读 `confirm()`，或在人工核验后使用 `ledger resolve` 记录成功结案。命令和保留期限见[应用管理与诊断](app-management.md)。
 - **纯净输出**：插件在发现或执行期间向标准输出打印的进度信息，在 CLI 模式下会被重定向到 `stderr`，确保 `stdout` 始终只输出单个合法 JSON 信封。
 
 ---
@@ -161,5 +161,5 @@ matches = find_text(boxes, "确认", min_confidence=0.8)
 
 ### 6.3 受控交互会话（`InteractionSession`）与弹窗规则（`PopupWatcher`）
 
-- **`InteractionSession`**：提供面向本地的 `observe`、`click_ref`、`swipe`、`back`、`wait_for`，自带固定墙钟时长与步数预算。所有写操作必须传入上一步观测到的 `layout_hash`，执行前会加锁、复采新鲜引用并校验温度与敏感屏，执行后返回新快照、前台包名、焦点引用与布局差分；若操作后状态不确定则返回 `unknown`，要求先重新观测。
+- **`InteractionSession`**：提供 `observe`、`click_ref`、`input_text_ref`、`long_click_ref`、`swipe`、`back`、`home`、`start_app`、`wait_for`、`scroll_until`，共享固定墙钟时长与步数预算。直接交互传入最新 `layout_hash`，滚动查找逐步复采。执行前加锁并校验温度、敏感屏，执行后返回新快照和差分。操作结果不确定时要求重新观测。
 - **`PopupWatcher`**：可传入 `wait_for`，按显式配置的「精确文案 + 精确包名」规则兜底关闭非破坏性弹窗（默认规则列表为空）。触发条件为命中唯一可用可点击控件、当前非敏感屏、同一布局最多触发一次且不超过总弹窗处理预算。

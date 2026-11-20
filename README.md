@@ -54,6 +54,7 @@ chmod 600 devices.local.yaml
 - **[更新日志](CHANGELOG.md)** — 各版本发布记录、已验证环境与已知边界。
 
 ### 插件与扩展
+- **[应用管理、交互与运行诊断](docs/app-management.md)** — HAP 下载部署、应用查询、引用式输入、账本对账、多设备执行与离线可视化检查和报告。
 - **[Action 插件与本地执行](docs/actions.md)** — 插件发现机制、参数与回执 Schema、执行预算、SQLite 幂等账本、视觉标注/OCR 与受控交互。
 - **[独立插件模板](examples/plugin-template/README.md)** — 开箱即用的独立插件工程模板、API 兼容性声明、离线契约测试与 CI 配置。
 - **[插件目录与维护指南](docs/plugin-catalog.md)** — 仓库通用示例清单、社区插件登记方式与插件上线/升级/下线流程。

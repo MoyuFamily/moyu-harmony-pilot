@@ -223,8 +223,8 @@ def test_durable_finalization_failure_returns_unknown(execution, monkeypatch, tm
 def test_interruption_immediately_after_reservation_commit(execution, monkeypatch, tmp_path):
     reserve = ActionLedger.reserve
 
-    def interrupted_reserve(self, key):
-        reserve(self, key)
+    def interrupted_reserve(self, key, **kwargs):
+        reserve(self, key, **kwargs)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(ActionLedger, "reserve", interrupted_reserve)
@@ -268,8 +268,8 @@ def test_cancellation_after_reservation_finishes_confirmation(
     if stage == "reserve":
         reserve = ActionLedger.reserve
 
-        def cancel_after_commit(self, key):
-            reserve(self, key)
+        def cancel_after_commit(self, key, **kwargs):
+            reserve(self, key, **kwargs)
             cancelled.set()
 
         monkeypatch.setattr(ActionLedger, "reserve", cancel_after_commit)
@@ -607,7 +607,9 @@ def test_external_entry_points_filter_before_import(monkeypatch):
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [entry])
     registry = ActionRegistry.discover(env={}, remote=True)
     entry.load.assert_not_called()
-    assert len(registry.list()) == 3
+    assert {item["action_id"] for item in registry.list()} == {
+        "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall",
+    }
     registry = ActionRegistry.discover(env={}, remote=True, allowed_actions=["example.mutate"])
     entry.load.assert_called_once()
     assert registry.describe("example.mutate")["remote_allowed"]
