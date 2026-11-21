@@ -1,6 +1,7 @@
 """L2: Official `uitest` layout parsing, compact snapshots, selectors, waits, and `uiInput`."""
 
 from moyu_harmony_pilot.ui.compact import (
+    SENSITIVE_SIGNAL_ENUM,
     build_compact_snapshot,
     detect_sensitive_signals,
     diff_snapshots,
@@ -30,6 +31,11 @@ from moyu_harmony_pilot.ui.parser import (
     parse_layout_dict,
     parse_layout_json,
 )
+from moyu_harmony_pilot.ui.redact import (
+    RedactionSummary,
+    redact_layout_dict,
+    redact_layout_json,
+)
 from moyu_harmony_pilot.ui.selector import UiSelector, find_all, find_first
 
 __all__ = [
@@ -38,6 +44,8 @@ __all__ = [
     "CompactSnapshot",
     "INTERACTIVE_NODE_TYPES",
     "LayoutDiff",
+    "RedactionSummary",
+    "SENSITIVE_SIGNAL_ENUM",
     "UiConcurrentCallError",
     "UiDriver",
     "UiElementNotFoundError",
@@ -58,4 +66,6 @@ __all__ = [
     "parse_bounds",
     "parse_layout_dict",
     "parse_layout_json",
+    "redact_layout_dict",
+    "redact_layout_json",
 ]

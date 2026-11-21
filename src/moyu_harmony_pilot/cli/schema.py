@@ -12,20 +12,13 @@ from moyu_harmony_pilot.cli.envelope import SCHEMA_VERSION
 from moyu_harmony_pilot.cli.operations import OPERATION_SCHEMAS
 from moyu_harmony_pilot.device import ScreenState
 from moyu_harmony_pilot.hdc import ConnectionState
+from moyu_harmony_pilot.ui import SENSITIVE_SIGNAL_ENUM
 
 ACTION_STATUS_ENUM: tuple[str, ...] = tuple(status.value for status in ActionStatus)
 
-SENSITIVE_SIGNAL_ENUM: tuple[str, ...] = (
-    "password_field",
-    "captcha_prompt",
-    "payment_confirmation",
-    "system_permission_dialog",
-)
-
-
 def build_cli_schema() -> dict[str, Any]:
     """Return the complete machine-readable CLI contract for zero-guess Agent invocation."""
-    schema = {
+    schema: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "pilot_version": __version__,
         "program": "harmony-pilot",
@@ -39,7 +32,13 @@ def build_cli_schema() -> dict[str, Any]:
                 "--local-lab": {"type": "boolean", "default": False},
                 "--max-steps": {"type": "integer", "default": 20, "minimum": 1, "maximum": 1000},
                 "--timeout": {"type": "number", "default": 60, "maximum": 3600},
+                "--inline-images": {"type": "boolean", "default": False},
+                "--max-image-bytes": {"type": "integer", "default": 2097152,
+                                      "minimum": 1, "maximum": 16777216},
+                "--enable-ocr": {"type": "boolean", "default": False},
             },
+            "screenshot_inline_requires_startup_opt_in": True,
+            "ocr_requires_startup_opt_in": True,
         },
         "action_contract": {
             "api_version": ACTION_API_VERSION,
@@ -58,6 +57,11 @@ def build_cli_schema() -> dict[str, Any]:
             "plugin_paths_environment": "HARMONY_PILOT_PLUGIN_PATHS",
             "local_plugin_manifest": "actions.json",
             "execution_thread": "main",
+            "context_api_min_pilot_version": "0.2.0.dev0",
+            "minimum_version_field": "min_pilot_version",
+            "inspection_metrics_schema_field": "inspection_metrics_schema",
+            "required_metrics_scope": "successful_final_receipts",
+            "context_mutation_stage": "submit",
         },
         "bridge_config": {
             "type": "object",
@@ -187,9 +191,43 @@ def build_cli_schema() -> dict[str, Any]:
                     "describe": {"arguments": {"action_id": {
                         "type": "string", "required": True,
                     }}},
+                    "validate": {
+                        "description": (
+                            "Validate plugin metadata, parameters and any required idempotency "
+                            "key offline; does not check a device or execute the action."
+                        ),
+                        "arguments": {"action_id": {"type": "string", "required": True}},
+                        "options": {
+                            "--params-json": {"type": "string", "default": "{}"},
+                            "--idempotency-key": {
+                                "type": "string",
+                                "description": (
+                                    "Required for mutating actions: 1–256 characters and not "
+                                    "whitespace only. Ignored for readonly actions."
+                                ),
+                            },
+                        },
+                        "result_schema": {
+                            "type": "object",
+                            "required": [
+                                "valid", "action_id", "api_version", "version", "side_effect",
+                                "device_checked", "executed",
+                            ],
+                            "properties": {
+                                "valid": {"const": True},
+                                "action_id": {"type": "string"},
+                                "api_version": {"type": "integer"},
+                                "version": {"type": "string"},
+                                "side_effect": {"enum": ["readonly", "mutating"]},
+                                "device_checked": {"const": False},
+                                "executed": {"const": False},
+                            },
+                        },
+                    },
                 },
                 "examples": ["harmony-pilot plugins list --json",
-                             "harmony-pilot plugins describe device.health --json"],
+                             "harmony-pilot plugins describe device.health --json",
+                             "harmony-pilot plugins validate device.health --json"],
             },
             "run": {
                 "side_effect": "action_defined",

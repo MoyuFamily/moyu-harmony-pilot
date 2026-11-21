@@ -1,0 +1,127 @@
+{
+  "provenance": {
+    "kind": "SYNTHETIC",
+    "device_capture": false,
+    "target_family": "HarmonyOS NEXT 6.x",
+    "form_factor": "phone",
+    "description": "手工构造的说明性解析回归数据。版本和设备形态是覆盖目标，真机验收状态为待验证。",
+    "schema_basis": [
+      "ui/parser.py",
+      "device/telemetry.py"
+    ]
+  },
+  "battery": {
+    "dump": "SYNTHETIC illustrative BatteryService sample\ncapacity: 72\nchargingStatus: 1\npluggedType: 2\ntemperature: 300\nvoltage: 4210571\nhealthState: 1\npresent: 1\n",
+    "expected": {
+      "battery_percent": 72,
+      "charging": true,
+      "charging_status": 1,
+      "plugged_type": 2,
+      "temperature_c": 30,
+      "voltage_mv": 4210.6,
+      "health_state": 1,
+      "present": true
+    }
+  },
+  "power": {
+    "dump": "SYNTHETIC illustrative PowerManagerService sample\nCurrent State: AWAKE Reason: 30\nScreenOffTime: Timeout=30000ms\n",
+    "expected": {
+      "screen_state": "on",
+      "raw_state": "AWAKE",
+      "screen_off_timeout_ms": 30000
+    }
+  },
+  "window": {
+    "dump": "SYNTHETIC illustrative WindowManagerService sample\nWindowName DisplayId Pid WinId Type\ncom.example.synthetic.decoy 42 9010 9 1\ncom.example.synthetic.phone6 0 1800 42 1\nFocus window: 42\n",
+    "expected": {
+      "bundle_name": "com.example.synthetic.phone6",
+      "window_name": "com.example.synthetic.phone6",
+      "window_id": 42,
+      "ability_name": null
+    }
+  },
+  "layouts": [
+    {
+      "display_id": 0,
+      "dump": {
+        "type": "Root",
+        "bounds": [
+          0,
+          0,
+          1200,
+          2400
+        ],
+        "bundleName": "com.example.synthetic.phone6",
+        "hostWindowId": 42,
+        "children": [
+          {
+            "type": "Text",
+            "id": "title_6",
+            "text": "SYNTHETIC 6.x 示例",
+            "origBounds": {
+              "left": 40,
+              "top": 60,
+              "right": 1160,
+              "bottom": 160
+            }
+          },
+          {
+            "type": "Button",
+            "id": "primary_6",
+            "key": "unused_fallback",
+            "text": "示例操作",
+            "description": "显式说明",
+            "accessibilityText": "后备说明",
+            "bounds": [
+              80,
+              400,
+              1120,
+              520
+            ],
+            "clickable": true,
+            "focused": true
+          },
+          {
+            "type": "Checkbox",
+            "id": "toggle_6",
+            "text": "示例选项",
+            "bounds": [
+              80,
+              600,
+              400,
+              700
+            ],
+            "checkable": true,
+            "checked": true,
+            "selected": true
+          },
+          {
+            "type": "Button",
+            "id": "offscreen_6",
+            "text": "屏外示例",
+            "bounds": [
+              80,
+              2500,
+              1120,
+              2600
+            ],
+            "clickable": true
+          }
+        ]
+      },
+      "expected": {
+        "screen_size": [
+          1200,
+          2400
+        ],
+        "node_count": 5,
+        "compact_ids": [
+          "title_6",
+          "primary_6",
+          "toggle_6"
+        ],
+        "root_window_id": "42"
+      }
+    }
+  ]
+}

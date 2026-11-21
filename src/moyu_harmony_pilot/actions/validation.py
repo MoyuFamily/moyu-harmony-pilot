@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any
+from typing import Any, overload
 
 from moyu_harmony_pilot.device import DeviceConfigurationError
 
@@ -31,6 +31,14 @@ SCHEMA_KEYWORDS = frozenset(
 _TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 
 
+@overload
+def json_copy(value: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def json_copy(value: Any) -> Any: ...
+
+
 def json_copy(value: Any) -> Any:
     """Copy a finite JSON value with a bounded encoded size."""
     try:
@@ -45,7 +53,7 @@ def json_copy(value: Any) -> Any:
 def _enum_equal(value: Any, candidate: Any) -> bool:
     """JSON numeric equality keeps booleans distinct, including inside containers."""
     if type(value) in (int, float) and type(candidate) in (int, float):
-        return value == candidate
+        return bool(value == candidate)
     if type(value) is not type(candidate):
         return False
     if isinstance(value, dict):
@@ -56,7 +64,7 @@ def _enum_equal(value: Any, candidate: Any) -> bool:
         return len(value) == len(candidate) and all(
             _enum_equal(item, other) for item, other in zip(value, candidate, strict=True)
         )
-    return value == candidate
+    return bool(value == candidate)
 
 
 def check_schema(schema: dict[str, Any], *, depth: int = 0) -> None:
@@ -103,7 +111,10 @@ def check_schema(schema: dict[str, Any], *, depth: int = 0) -> None:
     elif {"properties", "required", "additionalProperties"} & schema.keys():
         raise DeviceConfigurationError("Object keywords require the object type.")
     if "array" in kinds:
-        check_schema(schema.get("items"), depth=depth + 1)
+        items = schema.get("items")
+        if not isinstance(items, dict):
+            raise DeviceConfigurationError("Array schemas require an item schema.")
+        check_schema(items, depth=depth + 1)
     elif {"items", "minItems", "maxItems"} & schema.keys():
         raise DeviceConfigurationError("Array keywords require the array type.")
     if {"minLength", "maxLength"} & schema.keys() and "string" not in kinds:
@@ -112,10 +123,12 @@ def check_schema(schema: dict[str, Any], *, depth: int = 0) -> None:
         raise DeviceConfigurationError("Numeric bounds require a numeric type.")
 
 
-def validate_value(value: Any, schema: dict[str, Any], *, depth: int = 0) -> None:
-    """Validate values without echoing user data into errors."""
+def validate_value(
+    value: Any, schema: dict[str, Any], *, depth: int = 0, _path: str = "$",
+) -> None:
+    """Validate values, reporting schema-declared paths without echoing user data."""
     if depth > 8:
-        raise DeviceConfigurationError("JSON nesting exceeds the supported depth.")
+        raise DeviceConfigurationError(f"JSON nesting exceeds the supported depth at {_path}.")
     kinds = schema["type"]
     kinds = kinds if isinstance(kinds, list) else [kinds]
     actual = {
@@ -128,26 +141,32 @@ def validate_value(value: Any, schema: dict[str, Any], *, depth: int = 0) -> Non
         type(None): "null",
     }.get(type(value))
     if actual not in kinds and not (actual == "integer" and "number" in kinds):
-        raise DeviceConfigurationError("Value does not match its declared JSON type.")
+        raise DeviceConfigurationError(f"Value does not match its declared JSON type at {_path}.")
     if "enum" in schema:
         if not any(_enum_equal(value, candidate) for candidate in schema["enum"]):
-            raise DeviceConfigurationError("Value is outside the declared enum.")
+            raise DeviceConfigurationError(f"Value is outside the declared enum at {_path}.")
     if actual == "object":
         properties = schema.get("properties", {})
-        if set(value) - properties.keys() or set(schema.get("required", [])) - value.keys():
-            raise DeviceConfigurationError("Object has unknown or missing required properties.")
+        missing = next((name for name in schema.get("required", []) if name not in value), None)
+        if missing is not None:
+            missing_path = f"{_path}[{json.dumps(missing)}]"
+            raise DeviceConfigurationError(f"Missing required property at {missing_path}.")
+        if set(value) - properties.keys():
+            # Unknown keys are supplied by the caller and may themselves contain secrets.
+            raise DeviceConfigurationError(f"Object has unknown properties at {_path}.")
         for name, item in value.items():
-            validate_value(item, properties[name], depth=depth + 1)
+            child_path = f"{_path}[{json.dumps(name)}]"
+            validate_value(item, properties[name], depth=depth + 1, _path=child_path)
     elif actual == "array":
         if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", math.inf):
-            raise DeviceConfigurationError("Array length exceeds schema bounds.")
-        for item in value:
-            validate_value(item, schema["items"], depth=depth + 1)
+            raise DeviceConfigurationError(f"Array length exceeds schema bounds at {_path}.")
+        for index, item in enumerate(value):
+            validate_value(item, schema["items"], depth=depth + 1, _path=f"{_path}[{index}]")
     elif actual == "string":
         if not schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", math.inf):
-            raise DeviceConfigurationError("String length exceeds schema bounds.")
+            raise DeviceConfigurationError(f"String length exceeds schema bounds at {_path}.")
     elif actual in {"integer", "number"}:
         if (type(value) is float and not math.isfinite(value)) or not (
             schema.get("minimum", -math.inf) <= value <= schema.get("maximum", math.inf)
         ):
-            raise DeviceConfigurationError("Number exceeds schema bounds.")
+            raise DeviceConfigurationError(f"Number exceeds schema bounds at {_path}.")

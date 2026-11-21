@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from moyu_harmony_pilot.actions.budget import bounded_call, ensure_deadline_available
 from moyu_harmony_pilot.actions.models import ActionBudgetExceeded, ActionContext
@@ -16,7 +17,14 @@ from moyu_harmony_pilot.device import (
     HumanRequiredError,
 )
 from moyu_harmony_pilot.device.apps import validate_bundle
-from moyu_harmony_pilot.ui import CompactSnapshot, UiSelector, diff_snapshots, find_first
+from moyu_harmony_pilot.ui import (
+    CompactSnapshot,
+    UiNode,
+    UiSelector,
+    UiTree,
+    diff_snapshots,
+    find_first,
+)
 from moyu_harmony_pilot.ui.errors import UiElementNotFoundError
 from moyu_harmony_pilot.vision import PopupWatcher
 
@@ -24,13 +32,31 @@ T = TypeVar("T")
 
 
 class InteractionSession:
-    """Explicitly local exploration with fresh-reference checks and a fixed lifetime budget."""
+    """Guarded UI interaction for local-lab exploration or bound plugin execution."""
 
-    def __init__(self, device: HarmonyDevice, *, max_steps: int = 20, timeout: float = 60) -> None:
-        self.validate_budget(max_steps, timeout)
-        self.device = device
-        self.context = ActionContext(device, time.monotonic() + timeout, max_steps)
+    def __init__(
+        self,
+        device: HarmonyDevice,
+        *,
+        max_steps: int = 20,
+        timeout: float = 60,
+        _context: ActionContext | None = None,
+    ) -> None:
+        if _context is not None:
+            self.device = _context.device
+            self.context = _context
+            self._context_bound = True
+        else:
+            self.validate_budget(max_steps, timeout)
+            self.device = device
+            self.context = ActionContext(device, time.monotonic() + timeout, max_steps)
+            self._context_bound = False
         self._needs_observation = False
+
+    @classmethod
+    def for_context(cls, ctx: ActionContext) -> InteractionSession:
+        """Bind guarded UI interactions to an active ActionContext without double locking."""
+        return cls(ctx.device, _context=ctx)
 
     @staticmethod
     def validate_budget(max_steps: int, timeout: float) -> None:
@@ -43,7 +69,26 @@ class InteractionSession:
         ):
             raise DeviceConfigurationError("Invalid local interaction budget.")
 
-    def _locked(self, callback: Callable[[], T]) -> T:
+    def _require_mutation_stage(self, operation: str = "Mutating UI interactions") -> None:
+        if self._context_bound and self.context.stage != "submit":
+            raise DeviceConfigurationError(
+                f"{operation} are only allowed during the submit stage after ledger reservation."
+            )
+
+    def _locked(self, callback: Callable[[], T], *, mutating: bool = False) -> T:
+        if mutating:
+            self._require_mutation_stage()
+        if self._context_bound:
+            if threading.current_thread() is not threading.main_thread():
+                raise DeviceConfigurationError(
+                    "Context interactions require the runner main thread."
+                )
+            if self.context.stage not in {"readonly", "inspect", "submit", "confirm"}:
+                raise DeviceConfigurationError("Action context is no longer executing.")
+            self.context.checkpoint()
+            result = callback()
+            _ = self.context.remaining_timeout
+            return result
         ensure_deadline_available()
         with self.device.acquire_lock():
             try:
@@ -53,7 +98,7 @@ class InteractionSession:
                     "Local interaction budget exhausted.", code="action_budget_exceeded"
                 ) from exc
 
-    def _capture(self):
+    def _capture(self) -> tuple[UiTree, CompactSnapshot]:
         return self.device.dump_ui_compact(timeout=self.context.remaining_timeout)
 
     def observe(self) -> CompactSnapshot:
@@ -61,24 +106,35 @@ class InteractionSession:
         self._needs_observation = False
         return snapshot
 
-    def click_ref(self, ref: str, *, layout_hash: str) -> dict:
+    def dismiss_popup(
+        self, watcher: PopupWatcher, *, snapshot: CompactSnapshot | None = None
+    ) -> dict[str, Any] | None:
+        """Dismiss at most one unambiguously matched non-sensitive popup."""
+        self._require_mutation_stage("Popup dismissal")
+        current = self.observe() if snapshot is None else snapshot
+        ref = watcher.choose(current)
+        if ref is None:
+            return None
+        return self.click_ref(ref, layout_hash=current.layout_hash)
+
+    def click_ref(self, ref: str, *, layout_hash: str) -> dict[str, Any]:
         return self._step("click", layout_hash=layout_hash, ref=ref)
 
-    def swipe(self, direction: str, *, layout_hash: str) -> dict:
+    def swipe(self, direction: str, *, layout_hash: str) -> dict[str, Any]:
         if direction not in {"up", "down", "left", "right"}:
             raise DeviceConfigurationError("Choose an up, down, left, or right swipe.")
         return self._step("swipe", layout_hash=layout_hash, direction=direction)
 
-    def back(self, *, layout_hash: str) -> dict:
+    def back(self, *, layout_hash: str) -> dict[str, Any]:
         return self._step("back", layout_hash=layout_hash)
 
-    def home(self, *, layout_hash: str) -> dict:
+    def home(self, *, layout_hash: str) -> dict[str, Any]:
         return self._step("home", layout_hash=layout_hash)
 
-    def long_click_ref(self, ref: str, *, layout_hash: str) -> dict:
+    def long_click_ref(self, ref: str, *, layout_hash: str) -> dict[str, Any]:
         return self._step("long_click", layout_hash=layout_hash, ref=ref)
 
-    def input_text_ref(self, ref: str, text: str, *, layout_hash: str) -> dict:
+    def input_text_ref(self, ref: str, text: str, *, layout_hash: str) -> dict[str, Any]:
         if (not isinstance(text, str) or len(text) > 4096
                 or any(char in text for char in ("\x00", "\n", "\r"))):
             raise DeviceConfigurationError(
@@ -88,7 +144,7 @@ class InteractionSession:
 
     def start_app(
         self, bundle_name: str, *, ability_name: str | None = None, layout_hash: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         validate_bundle(bundle_name)
         if ability_name is not None:
             validate_bundle(ability_name)
@@ -99,12 +155,13 @@ class InteractionSession:
     def _step(
         self, action: str, *, layout_hash: str, ref: str = "", direction: str = "",
         text: str = "", bundle_name: str = "", ability_name: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
+        self._require_mutation_stage()
         if self._needs_observation:
             raise DeviceConfigurationError("Observe the UI after an uncertain interaction.")
         submitted = False
 
-        def perform() -> dict:
+        def perform() -> dict[str, Any]:
             nonlocal submitted
             _, before = self._capture()
             if before.layout_hash != layout_hash:
@@ -195,7 +252,10 @@ class InteractionSession:
             }
 
         try:
-            return self._locked(perform)
+            return self._locked(perform, mutating=True)
+        except ActionBudgetExceeded:
+            self._needs_observation = submitted
+            raise
         except HumanRequiredError:
             self._needs_observation = submitted
             raise
@@ -209,9 +269,11 @@ class InteractionSession:
 
     def wait_for(
         self, selector: UiSelector, *, watcher: PopupWatcher | None = None, interval: float = 0.25
-    ):
+    ) -> UiNode:
         if not math.isfinite(interval) or interval < 0:
             raise DeviceConfigurationError("Polling interval must be finite and non-negative.")
+        if watcher is not None:
+            self._require_mutation_stage("Popup dismissal")
         while True:
             snapshot, node = self._locked(lambda: self._find(selector))
             if node is not None:
@@ -220,15 +282,29 @@ class InteractionSession:
             if ref is not None:
                 self.click_ref(ref, layout_hash=snapshot.layout_hash)
             try:
-                time.sleep(min(interval, self.context.remaining_timeout))
+                remaining = self.context.remaining_timeout
+                delay = min(interval, remaining)
+                if self._context_bound:
+                    sleep_until = time.monotonic() + delay
+                    while True:
+                        _ = self.context.remaining_timeout
+                        left = sleep_until - time.monotonic()
+                        if left <= 0:
+                            break
+                        time.sleep(min(0.05, left))
+                else:
+                    time.sleep(delay)
             except ActionBudgetExceeded as exc:
+                if self._context_bound:
+                    raise
                 raise DeviceError(
                     "Local interaction deadline exhausted.", code="action_budget_exceeded"
                 ) from exc
 
     def scroll_until(
         self, selector: UiSelector, *, direction: str = "up", max_swipes: int = 10
-    ):
+    ) -> UiNode:
+        self._require_mutation_stage("Scrolling")
         if type(max_swipes) is not int or not 0 <= max_swipes <= 100:
             raise DeviceConfigurationError("max_swipes must be between 0 and 100.")
         if direction not in {"up", "down", "left", "right"}:
@@ -241,7 +317,7 @@ class InteractionSession:
                 self.swipe(direction, layout_hash=snapshot.layout_hash)
         raise UiElementNotFoundError("Element was not found within the scrolling budget.")
 
-    def _find(self, selector: UiSelector):
+    def _find(self, selector: UiSelector) -> tuple[CompactSnapshot, UiNode | None]:
         tree, snapshot = self._capture()
         if snapshot.sensitive_signals:
             raise HumanRequiredError("Sensitive screen requires human intervention.")

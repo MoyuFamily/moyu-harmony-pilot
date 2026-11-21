@@ -1,5 +1,7 @@
 """Read-only action using the public Pilot action and device interfaces."""
 
+from typing import Any
+
 from moyu_harmony_pilot.actions import ActionContext, ActionOutcome, ActionPlugin, ActionSpec
 
 
@@ -8,6 +10,7 @@ class BatteryCheck(ActionPlugin):
         action_id="example.battery_check",
         version="1.0",
         api_version=1,
+        min_pilot_version="0.2.0.dev0",
         description="Check the current battery level against a minimum.",
         side_effect="readonly",
         timeout_seconds=30,
@@ -33,7 +36,7 @@ class BatteryCheck(ActionPlugin):
         examples=({"minimum_battery": 20},),
     )
 
-    def execute(self, ctx: ActionContext, params: dict) -> ActionOutcome:
+    def execute(self, ctx: ActionContext, params: dict[str, Any]) -> ActionOutcome:
         ctx.checkpoint()
         health = ctx.device.get_health(timeout=ctx.remaining_timeout)
         battery = health.battery.battery_percent

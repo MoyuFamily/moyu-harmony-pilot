@@ -1,57 +1,85 @@
 # Harmony Pilot 独立插件工程模板
 
-本目录是一个可直接复制开新仓的独立插件模板（复制时请一并包含 `.github/`）。模板内置了一个打包好的只读电量检查动作（`example.battery_check`）、基于真实安装态的 entry point 契约测试，以及仅供测试演示的有副作用模拟用例。本模板由 MoyuFamily 按 MIT 协议维护。
+本目录是一个可直接复制开新仓的独立插件模板（复制时请一并包含 `.github/`）。模板打包了两个动作，并通过真实安装态的 entry point 运行离线契约测试。本模板由 MoyuFamily 按 MIT 协议维护。
+
+| 动作 | 用途 | 参数 | 成功指标 |
+| --- | --- | --- | --- |
+| `example.battery_check` | 只读电量检查 | `minimum_battery`，0–100 的整数 | `battery_percent`、`ready` |
+| `example.demo_toggle` | 设置合成演示界面的开关状态 | `enabled`，布尔值 | `enabled` |
+
+`example.demo_toggle` 使用 `IdempotentAction` 与 `ctx.interact()`，只匹配合成包名 `com.example.pilotdemo` 下 ID 为 `demo_toggle` 的 `Toggle` 控件。离线测试用两份合成布局表示开关状态，覆盖开启和关闭方向。插件按目标状态决定是否提交，所有点击均在 `submit()` 中执行，`inspect()` 与 `confirm()` 只观测界面。
 
 ---
 
 ## 1. 兼容性说明
 
-- 动作实现 **Action API v1**；
-- 包元数据声明支持 **Python 3.11+** 及 `moyu-harmony-pilot>=0.1.0,<0.2`；
-- `requirements-test.txt` 固定了 CI 审阅通过的 Pilot 发布版本（`v0.1.0`）；
+- 动作实现 **Action API v1**。
+- 包元数据声明支持 **Python 3.11+** 及 `moyu-harmony-pilot>=0.2.0.dev0,<0.3`。
+- 两个动作均声明 `min_pilot_version="0.2.0.dev0"`。公共测试包、上下文交互和独立检查指标 Schema 采用这一开发版本基线。
+- `requirements-test.txt` 固定 SDK 测试基线为 `0.2.0.dev0`，可由匹配版本的源码或 wheel 提供。
 - `.github/workflows/contract.yml` 在 macOS / Linux × Python 3.11 / 3.12 矩阵下运行离线契约测试。
 
 改造成自己的插件后，请以实际跑通的 Pilot 版本与宿主机测试记录为准，及时更新依赖版本范围。
+
+CI 从 `MoyuFamily/moyu-harmony-pilot` 检出 SDK 源码并安装，使用仓库变量 `PILOT_REF` 指定版本，默认值为 `main`。设置为经过验证的提交 SHA 后，可以固定开发版本的测试来源。安装步骤会核对 `requirements-test.txt` 中的版本并执行 `pip check`，随后运行离线测试、两个动作的能力发现与参数预检。测试期间由公共 `offline_guard` 拦截网络、DNS 与子进程调用。
 
 ---
 
 ## 2. 本地安装与契约验证
 
-在复制出来的插件目录中执行以下命令（测试全程使用临时目录与标准库 Mock 设备，无需连接真机）：
+在复制出来的插件目录中执行以下命令。将 `/path/to/moyu-harmony-pilot` 替换为包含 `0.2.0.dev0` API 的 SDK 源码目录或对应 wheel 路径。测试全程使用临时目录与标准库 fake。
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/python -m pip install -r requirements-test.txt
-.venv/bin/python -m pip install .
+.venv/bin/python -m pip install /path/to/moyu-harmony-pilot
+.venv/bin/python -m pip install --no-index --no-deps -r requirements-test.txt
+.venv/bin/python -m pip install --no-deps .
 .venv/bin/python -m pip check
 .venv/bin/python -m tests
 .venv/bin/harmony-pilot plugins describe example.battery_check --json
+.venv/bin/harmony-pilot plugins describe example.demo_toggle --json
 ```
 
 如果正在对接本地源码检出的 Pilot 仓库，先安装本地 Pilot，再用 `python -m pip install --no-deps .` 安装当前插件，随后同样运行 `pip check` 与 `python -m tests`。
 
+安装后，还可以通过 `plugins validate` 离线检查两个已安装动作的参数。
+
+```bash
+.venv/bin/harmony-pilot plugins validate example.battery_check --params-json '{"minimum_battery":20}' --json
+.venv/bin/harmony-pilot plugins validate example.demo_toggle --params-json '{"enabled":true}' --idempotency-key synthetic-demo --json
+```
+
+预检会发现并加载可信插件，但不连接设备、不执行动作，也不检查远程白名单；有副作用动作还需传入 `--idempotency-key`。它补充契约测试，不能代替测试。
+
 ### 契约套件会检查什么？
 
-`python -m tests` 只要遇到 SDK 缺失、entry point 未注册、契约失败、测试套件为空或**任意测试被跳过**都会以失败退出：
-- 通过真实的已安装 entry point 发现插件，经 `ActionRunner` 验证参数校验、远程白名单门控与有界结果；
-- Mock 设备会记录每次底层调用，确保只读动作不产生意外交互；
-- 有副作用测试示例会验证只读 `inspect`、提交前持久化预留、确认后的幂等去重，以及跨重启的 `unknown` 保护。
+`python -m tests` 只要遇到 SDK 缺失、entry point 未注册、契约失败、测试套件为空或**任意测试被跳过**都会以失败退出。
+
+- 通过真实的已安装 entry point 发现两个插件，经 `ActionRunner` 验证参数校验、最低宿主版本、远程白名单门控与有界结果。
+- `FakeHdcTransport` 记录底层调用，配合真实 `HarmonyDevice`、锁、布局解析和热保护路径运行。`tests/support.py` 只维护本模板的合成布局。
+- `assert_idempotent_success` 检查真实提交、提交前已持久化的 `submitting` 记录、只读检查与确认，以及原 runner 和重建 runner 的成功去重。
+- `assert_unknown_no_replay` 覆盖写入后的超时和确认失败，检查重建 runner 后继续返回 `unknown`。只读 `reconcile` 成功后，再次调用会返回 `already_done`。
+- `assert_pre_submit_blocked` 检查过温和敏感界面返回 `device_overheated` 或 `human_required`，并验证写操作、提交阶段与账本预留均未发生。
+
+每个场景使用新的临时 `state_dir` 和 fake。`make_fake_device()` 返回的 `device`、`state`、`transport` 分别用于执行、配置场景和检查调用。`FakeDeviceState.layouts` 接受合成布局 JSON，`advance_layout_on_click` 控制点击后的布局变化，`timeout_after_mutation` 模拟写入成功后丢失回执。更多驱动命令可通过 `shell_results` 提供精确响应。
+
+`example.demo_toggle` 的检查指标为 `current_enabled`，最终成功指标为 `enabled`，两个阶段各自声明 Schema。出现 `human_required` 时由人类接管并重新观测。出现 `unknown` 时保留原幂等键和账本，通过只读对账确认结果。
 
 ---
 
 ## 3. 改造成自有插件（5 步清单）
 
-1. **更换命名空间**：在 `pyproject.toml`、源码与测试中重命名分发包名、Python 模块名和 `example.battery_check` 动作 ID，使用你自己的命名空间。
-2. **声明动作契约**：在 `ActionSpec` 中写清参数 Schema、返回指标 Schema、超时和副作用级别；保持 `api_version=1` 显式声明，用 `version` 标识业务行为版本。
-3. **完善离线 Fixture**：按插件实际调用的驱动方法扩展 `tests/support.py` 中的 Mock 设备，并补充脱敏布局 Fixture。务必保证模块导入与构造函数中不做任何设备/网络 I/O。
-4. **实现有副作用动作（如需要）**：继承 `IdempotentAction`，将 `tests/test_mutating_contract.py` 改造为覆盖你自己的已安装动作；所有会产生副作用的导航与提交步骤都要放在账本预留之后的 `submit()` 中。
-5. **维护发布信息**：每次发版同步更新固定的 Pilot 测试版本、兼容区间、协议与维护者信息；宿主机升级时注意保留 `state_dir` 账本目录。
+1. 在 `pyproject.toml`、源码与测试中更换分发包名、Python 模块名和两个动作 ID，使用自己的命名空间。
+2. 在 `ActionSpec` 中声明参数、检查指标、最终指标 Schema、超时和副作用级别，保持 `api_version=1` 和实际所需的 `min_pilot_version`，用 `version` 标识业务行为版本。
+3. 使用公共 `moyu_harmony_pilot.testing` 工具构建离线 Fixture，在 `tests/support.py` 中维护插件特定的合成或脱敏布局。模块导入与构造函数保持无设备及网络 I/O。
+4. 将 `DemoToggle` 改造为自有 `IdempotentAction`，通过已安装 entry point 测试。所有产生副作用的导航和提交步骤放在账本预留之后的 `submit()` 中，交互通过 `ctx.interact()` 共享锁、预算和阶段约束。上下文仅在 runner 的当前执行阶段内使用。
+5. 发版时同步更新 Pilot 测试基线、`PILOT_REF`、兼容区间、协议与维护者信息，宿主机升级时保留 `state_dir` 账本目录。
 
 ---
 
 ## 4. 接入远程 Bridge 与本地 MCP
 
-将插件安装到 Pilot 服务使用的同一个 Python 环境中，在私有 Bridge 配置里把动作 ID 加入目标设备的 `allowed_actions`，然后运行预检并重启服务：
+将插件安装到 Pilot 服务使用的同一个 Python 环境中，在私有 Bridge 配置里把动作 ID 加入目标设备的 `allowed_actions`，然后运行预检并重启服务。
 
 ```bash
 harmony-pilot serve --config /private/bridge.local.json --check --json

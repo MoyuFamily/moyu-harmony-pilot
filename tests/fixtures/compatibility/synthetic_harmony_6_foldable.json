@@ -1,0 +1,163 @@
+{
+  "provenance": {
+    "kind": "SYNTHETIC",
+    "device_capture": false,
+    "target_family": "HarmonyOS NEXT 6.x",
+    "form_factor": "foldable",
+    "description": "手工构造的说明性解析回归数据。版本和设备形态是覆盖目标，真机验收状态为待验证。",
+    "schema_basis": [
+      "ui/parser.py",
+      "device/telemetry.py"
+    ]
+  },
+  "battery": {
+    "dump": "SYNTHETIC illustrative BatteryService sample\ncapacity: 99\nchargingStatus: 3\ntemperature: 280\npresent: 1\n",
+    "expected": {
+      "battery_percent": 99,
+      "charging": false,
+      "charging_status": 3,
+      "plugged_type": null,
+      "temperature_c": 28,
+      "voltage_mv": null,
+      "health_state": null,
+      "present": true
+    }
+  },
+  "power": {
+    "dump": "SYNTHETIC illustrative PowerManagerService sample\nDisplay[0] State: OFF\nDisplay[7] State: ON\n",
+    "expected": {
+      "screen_state": "off",
+      "raw_state": "OFF",
+      "screen_off_timeout_ms": null
+    }
+  },
+  "window": {
+    "dump": "SYNTHETIC illustrative WindowManagerService sample\nWindowName DisplayId Pid Type Mode WinId Flag\ncom.example.synthetic.cover 0 207 1 1 13 0\ncom.example.synthetic.foldable 7 9000 1 1 207 0\nFocus window: 207\nabilityName=EntryAbility\n",
+    "expected": {
+      "bundle_name": "com.example.synthetic.foldable",
+      "window_name": "com.example.synthetic.foldable",
+      "window_id": 207,
+      "ability_name": "EntryAbility"
+    }
+  },
+  "layouts": [
+    {
+      "display_id": 0,
+      "dump": {
+        "attributes": {
+          "type": "Root",
+          "bounds": [
+            0,
+            0,
+            720,
+            1680
+          ],
+          "bundleName": "com.example.synthetic.foldable",
+          "hostWindowId": "13"
+        },
+        "children": [
+          {
+            "attributes": {
+              "type": "Text",
+              "id": "title_foldable",
+              "text": "SYNTHETIC 折叠屏示例",
+              "bounds": [
+                40,
+                60,
+                680,
+                160
+              ]
+            },
+            "children": []
+          },
+          {
+            "attributes": {
+              "type": "Button",
+              "id": "primary_foldable",
+              "text": "示例操作",
+              "bounds": [
+                80,
+                400,
+                640,
+                520
+              ],
+              "clickable": true
+            },
+            "children": []
+          }
+        ]
+      },
+      "expected": {
+        "screen_size": [
+          720,
+          1680
+        ],
+        "node_count": 3,
+        "compact_ids": [
+          "title_foldable",
+          "primary_foldable"
+        ],
+        "root_window_id": "13"
+      }
+    },
+    {
+      "display_id": 7,
+      "dump": {
+        "attributes": {
+          "type": "Root",
+          "bounds": [
+            0,
+            0,
+            2200,
+            1800
+          ],
+          "bundleName": "com.example.synthetic.foldable",
+          "hostWindowId": "207"
+        },
+        "children": [
+          {
+            "attributes": {
+              "type": "Text",
+              "id": "title_foldable",
+              "text": "SYNTHETIC 折叠屏示例",
+              "bounds": [
+                40,
+                60,
+                2160,
+                160
+              ]
+            },
+            "children": []
+          },
+          {
+            "attributes": {
+              "type": "Button",
+              "id": "primary_foldable",
+              "text": "示例操作",
+              "bounds": [
+                80,
+                400,
+                2120,
+                520
+              ],
+              "clickable": true
+            },
+            "children": []
+          }
+        ]
+      },
+      "expected": {
+        "screen_size": [
+          2200,
+          1800
+        ],
+        "node_count": 3,
+        "compact_ids": [
+          "title_foldable",
+          "primary_foldable"
+        ],
+        "root_window_id": "207"
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from moyu_harmony_pilot.device.models import (
     PowerTelemetry,
     ScreenshotResult,
 )
+from moyu_harmony_pilot.device.packages import prepare_install_packages
 from moyu_harmony_pilot.device.telemetry import (
     parse_battery_dump,
     parse_foreground_window,
@@ -264,9 +266,24 @@ class HarmonyDevice:
         )
         return parse_app_info(result.stdout, bundle)
 
-    def install_app(self, packages: list[str | Path], *, timeout: float = 120.0) -> None:
-        """Submit installation once. Use ActionRunner for durable idempotency."""
-        self._hdc.install(self._profile.serial, packages, timeout=timeout)
+    def install_app(self, packages: Sequence[str | Path], *, timeout: float = 120.0) -> None:
+        """Submit a single intact APP on API 22+, otherwise submit the module set.
+
+        Use ActionRunner for pinned package copies and durable idempotency.
+        """
+        if isinstance(packages, (str, bytes, Path)) or not 1 <= len(packages) <= 32:
+            raise DeviceConfigurationError("Provide between 1 and 32 package paths.")
+        has_app = any(Path(package).suffix.lower() == ".app" for package in packages)
+        expand_apps = True
+        if has_app and len(packages) == 1:
+            api = self._hdc.get_param(
+                self._profile.serial, "const.ohos.apiversion", timeout=timeout,
+            )
+            if not api.isdecimal() or int(api) <= 0:
+                raise DeviceConfigurationError("Cannot determine device API for APP installation.")
+            expand_apps = int(api) < 22
+        with prepare_install_packages(packages, expand_apps=expand_apps) as modules:
+            self._hdc.install(self._profile.serial, modules, timeout=timeout)
 
     def uninstall_app(self, bundle_name: str, *, timeout: float = 120.0) -> None:
         """Submit removal once. Use ActionRunner for durable idempotency."""

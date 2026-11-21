@@ -12,13 +12,20 @@ from moyu_harmony_pilot.device.models import (
 )
 
 _KV_LINE_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*([^\r\n]+?)\s*$")
-_POWER_STATE_RE = re.compile(r"Current State:\s*([A-Za-z_]+)", re.IGNORECASE)
-_SCREEN_OFF_TIMEOUT_RE = re.compile(r"ScreenOffTime:\s*Timeout\s*=\s*(\d+)\s*ms", re.IGNORECASE)
+_POWER_STATE_RE = re.compile(
+    r"(?:Current\s+State|Display(?:\[\d+\])?\s+State|Power\s+State)\s*:\s*([A-Za-z_]+)",
+    re.IGNORECASE,
+)
+_SCREEN_OFF_TIMEOUT_RE = re.compile(
+    r"ScreenOffTime:\s*Timeout\s*=\s*(\d+)\s*(?:ms)?", re.IGNORECASE
+)
 _FOCUS_WINDOW_RE = re.compile(r"Focus\s+window\s*:\s*(\d+)", re.IGNORECASE)
 _BUNDLE_TOKEN_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+){2,})\b")
 
-_ON_POWER_STATES = frozenset({"AWAKE", "DIM"})
-_OFF_POWER_STATES = frozenset({"INACTIVE", "SLEEP", "STAND_BY", "DOZE", "HIBERNATE", "SHUTDOWN"})
+_ON_POWER_STATES = frozenset({"AWAKE", "DIM", "ON", "DISPLAY_ON"})
+_OFF_POWER_STATES = frozenset(
+    {"INACTIVE", "SLEEP", "STAND_BY", "DOZE", "HIBERNATE", "SHUTDOWN", "OFF", "DISPLAY_OFF"}
+)
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -44,7 +51,8 @@ def parse_battery_dump(output: str) -> BatteryTelemetry:
     for line in output.splitlines():
         match = _KV_LINE_RE.match(line)
         if match:
-            fields[match.group(1).lower()] = match.group(2).strip()
+            normalized = match.group(1).lower().replace("_", "")
+            fields[normalized] = match.group(2).strip()
 
     capacity = _parse_int(fields.get("capacity"))
     if capacity is not None and not (0 <= capacity <= 100):
@@ -72,7 +80,7 @@ def parse_battery_dump(output: str) -> BatteryTelemetry:
     temperature_c: float | None = None
     raw_temp = fields.get("temperature")
     if raw_temp is not None:
-        cleaned_temp = raw_temp.split()[0]
+        cleaned_temp = re.sub(r"(?:°?C)\Z", "", raw_temp.split()[0], flags=re.IGNORECASE)
         try:
             if "." in cleaned_temp:
                 temperature_c = round(float(cleaned_temp), 1)
@@ -133,18 +141,33 @@ def parse_foreground_window(output: str) -> ForegroundWindow:
     ability_name: str | None = None
 
     lines = output.splitlines()
+    win_id_col: int | None = None
+    for line in lines:
+        tokens = line.split()
+        if tokens and tokens[0] == "WindowName" and "WinId" in tokens:
+            win_id_col = tokens.index("WinId")
+            break
+
     if focus_id is not None:
         focus_token = str(focus_id)
         for line in lines:
             tokens = line.split()
-            if len(tokens) >= 3 and focus_token in tokens[1:4]:
-                # Typical WMS table: `WindowName DisplayId Pid WinId Type Mode Flag ...`
-                if tokens[0] not in {"WindowName", "Focus"} and not tokens[0].startswith("---"):
-                    window_name = tokens[0]
-                    bundle_hit = _BUNDLE_TOKEN_RE.search(window_name)
-                    if bundle_hit:
-                        bundle_name = bundle_hit.group(1)
-                    break
+            if not tokens or tokens[0] in {"WindowName", "Focus"} or tokens[0].startswith("---"):
+                continue
+            matched = (
+                (
+                    win_id_col is not None
+                    and len(tokens) > win_id_col
+                    and tokens[win_id_col] == focus_token
+                )
+                or (win_id_col is None and len(tokens) >= 3 and focus_token in tokens[1:4])
+            )
+            if matched:
+                window_name = tokens[0]
+                bundle_hit = _BUNDLE_TOKEN_RE.search(window_name)
+                if bundle_hit:
+                    bundle_name = bundle_hit.group(1)
+                break
 
     # Fallback key-value parsing if table format differs across OS versions
     if bundle_name is None:

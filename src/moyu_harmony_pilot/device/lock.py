@@ -8,14 +8,15 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from types import TracebackType
+from types import ModuleType, TracebackType
 
 from moyu_harmony_pilot.device.errors import DeviceBusyError
 
+fcntl: ModuleType | None
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-POSIX fallback
-    fcntl = None  # type: ignore[assignment]
+    fcntl = None
 
 _IN_PROCESS_GUARD = threading.Lock()
 _IN_PROCESS_LOCKS: dict[str, threading.Lock] = {}

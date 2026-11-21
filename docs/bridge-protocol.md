@@ -1,4 +1,6 @@
-# Pull Bridge Protocol Specification (v1 Draft)
+# Pull Bridge Protocol v1.0
+
+协议于 2026-11-21 冻结为 v1.0。路径 `/bridge/v1/` 与版本头 `X-Harmony-Pilot-Protocol: 1` 继续使用线上的 v1 表示。当前客户端的 Action API 仍为 v1，新增插件最低版本字段属于本地能力发现信息。
 
 > **协议定位**：服务端无关（Server-Agnostic）的跨 NAT 单向出站任务派发协议。  
 > 任何外部调度系统、运维平台或控制面只要按本文档实现服务端（Broker），即可安全接入 `moyu-harmony-pilot` 边缘节点，双方保持彻底解耦。
@@ -23,8 +25,11 @@
 - **传输层**：必须使用 `HTTPS`（仅允许 `http://127.0.0.1` / `http://localhost` 用于本地测试）。
 - **认证头**：`Authorization: Bearer <BRIDGE_TOKEN>`
 - **内容类型**：`Content-Type: application/json; charset=utf-8`
-- **时间戳**：统一使用 UTC ISO-8601 字符串（如 `"2026-11-19T08:00:00Z"`）或整型 Unix 秒（本协议统一采用 **UTC ISO-8601 字符串**）。
+- 时间戳使用带时区的 ISO-8601 字符串，发送端统一输出 UTC，例如 `"2026-11-19T08:00:00Z"`。
 - **协议版本头**：`X-Harmony-Pilot-Protocol: 1`
+- 请求体最多 16 KiB，响应体最多 64 KiB，JSON 对象键唯一且所有数值有限。任务对象采用 §4.2 的完整字段集合，客户端拒绝缺失或额外字段。
+- 标识符 `bridgeId`、`jobId`、`deviceAlias` 和 `action` 使用 `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`。幂等键最长 256 字符，租约令牌最长 1024 字符，均须非空且无控制字符。
+- `timeoutSeconds` 范围为 0.001–3600，`maxJobs` 为 1–32 的整数，`waitSeconds` 为 0–25 的整数。
 
 ---
 
@@ -192,7 +197,7 @@ Bridge 仅上报当前处于 `online` 且非 `busy` 的设备及各自白名单�
 ```
 
 #### 字段约束
-- `status`：必须是第 3 节定义的执行终态枚举之一。
+- `status` 使用执行终态 `succeeded`、`already_done`、`human_required`、`device_offline`、`device_overheated`、`failed` 或 `unknown`。排队期的 `expired` 与 `canceled` 由 Broker 管理。
 - `errorCode`：有限蛇形错误码（如 `hdc_timeout`、`element_not_found`、`auth_expired`、`captcha_required`、`overheated`），不超过 64 字符；严禁放原始异常堆栈。
 - `summary`：短脱敏说明（不超过 256 字符），严禁包含账号、手机号、Cookie 或原始页面文本。
 - `metrics`：扁平键值对象，键数 `<= 32`，值仅允许 `int | float | bool | str(<=128) | null`。
@@ -201,6 +206,10 @@ Bridge 仅上报当前处于 `online` 且非 `busy` 的设备及各自白名单�
 #### 响应
 - `200 OK`：`{"ok": true, "jobId": "job_01J...", "status": "succeeded"}`
 - `409 Conflict`：任务已由其他终态关闭且与本次不一致。
+
+Bridge 将相同 `jobId` 绑定到首次认领的设备、动作、参数、幂等键和租约令牌。重新投递应携带原始请求，改变请求会被拒绝。相同请求会补发已保存的不可变回执。
+
+提交前取消可安全终止执行。客户端已持久化 `submitting` 后，在原预算内完成提交与确认，结果不确定时保留 `unknown`。Broker 关闭租约也须保留该防重语义。
 
 ---
 
@@ -219,3 +228,37 @@ Bridge 仅上报当前处于 `online` 且非 `busy` 的设备及各自白名单�
 4. **客户端退避与错误码**：
    - `401 / 403`：Token 无效或越权，Bridge 记录受限错误并大幅拉长退避间隔（防止死循环轰炸）。
    - `429 / 5xx` / 网络超时：Bridge 使用带随机抖动的指数退避（例如 5s → 10s → 20s → 60s 上限）。
+
+## 6. 本地离线协议验收
+
+`moyu_harmony_pilot.testing.broker.MockBroker` 提供内存中的四端点契约夹具。它校验请求字段、设备能力、租约、回执大小与重复完成，支持注入 `BridgeWorker(client=broker)`。需要同时验证 HTTP 请求头、JSON 编码和认证时，将它作为 `HttpBridgeClient` 的 opener。
+
+```python
+from moyu_harmony_pilot.bridge import HttpBridgeClient
+from moyu_harmony_pilot.testing.broker import MockBroker
+
+# config 为测试构造的 BridgeConfig，job_payload 为完整的合成任务字典。
+broker = MockBroker(config.bridge_id, token=config.token)
+broker.enqueue(job_payload)
+client = HttpBridgeClient(config, opener=broker)
+# 把 client 注入使用 FakeHdcTransport 的 BridgeWorker 后执行 run_once()。
+```
+
+该工具全程使用内存，适用于离线协议验收。参考用例覆盖真实 worker 与 HTTP 编码器的组合、白名单过滤、设备互斥、取消信号、重复回执及冲突拒绝。
+
+```bash
+.venv/bin/pytest tests/test_mock_broker.py tests/test_bridge.py tests/test_bridge_parallel.py
+```
+
+多版本真机、断网恢复、受控副作用及服务退出验收项目见[发布检查清单](release-checklist.md)。
+
+## 7. 回执保留与防重记录
+
+`ReceiptStore.prune(older_than_days=N)` 将已关闭且超过保留期的 `succeeded` / `already_done` 回执载荷裁剪为任务防重记录。保留期限从最近确认回执时间计算，运行中、待发送和 `unknown` 记录完整保留。收到冲突或租约关闭响应的回执完整保留。旧数据库缺少正向确认来源，迁移后保留原回执，直到再次投递获得成功确认。
+
+```bash
+harmony-pilot receipts prune --database .state/bridge/WORKER_NAMESPACE/receipts.sqlite3 \
+  --bridge-id example-worker --older-than-days 90 --json
+```
+
+`WORKER_NAMESPACE` 为该 Broker URL 与 Bridge ID 对应的本地状态目录。命令全程离线，返回 `archived` 数量与 `job_tombstones_retained=true`。已归档任务再次投递会拒绝执行，应到 Broker 查询原确认结果。防重记录长期保留，每个任务仍有一条小记录，SQLite 释放页由数据库复用，文件大小可能保持原值。

@@ -30,19 +30,103 @@ _FOLDABLE_CONTAINER_TYPES: frozenset[str] = frozenset(
         "Radio",
     }
 )
-_PASSWORD_RE = re.compile(r"(password|passcode|pin\s*code|密码|口令)", re.IGNORECASE)
+SENSITIVE_SIGNAL_ENUM: tuple[str, ...] = (
+    "password_field",
+    "captcha_prompt",
+    "payment_confirmation",
+    "system_permission_dialog",
+    "biometric_prompt",
+)
+
+_INPUT_CONTROL_TYPES: frozenset[str] = frozenset(
+    {"TextInput", "TextArea", "Input", "PasswordInput", "PinInput"}
+)
+_PASSWORD_INPUT_RE = re.compile(
+    r"\b(?:password|passcode|pin(?:\s*code)?|pwd)\b|密码|口令|PIN\s*码", re.IGNORECASE
+)
+_SEARCH_INPUT_RE = re.compile(r"\b(?:search|find|filter)\b|搜索|查找|筛选", re.IGNORECASE)
+_PASSWORD_ID_RE = re.compile(
+    r"(?:^|[.\s-])(?:(?:password|passcode|pin|pwd)[.\s-]*(?:input|edit|field|box|entry|keypad)"
+    r"|(?:input|edit|field|box|entry|keypad)[.\s-]*(?:password|passcode|pin|pwd))"
+    r"(?=$|[.\s\d-])",
+    re.IGNORECASE,
+)
+_PASSWORD_LABEL_RE = re.compile(
+    r"(?:(?:(?:current|new|confirm|device|login|payment|lock\s*screen)\s+){0,2}"
+    r"(?:password|passcode|pin(?:\s*code)?|pwd)"
+    r"|(?:当前|新|确认|锁屏|支付|交易|登录|开机)?(?:密码|口令|PIN\s*码?))\s*[:：*]?",
+    re.IGNORECASE,
+)
+_PASSWORD_PROMPT_RE = re.compile(
+    r"(?:\b(?:enter|input|type|verify|confirm|please\s+set)\s+"
+    r"(?:(?:your|the|current|new|device|login|payment|lock\s*screen|\d[- ]digit)\s+){0,3}"
+    r"(?:password|passcode|pin(?:\s*code)?)\b"
+    r"(?!\s*(?:manager|management|settings|options|autofill)\b)"
+    r"|(?:输入|验证|确认|请设置|请解锁).{0,6}(?:密码|口令|PIN(?:\s*码|\b))(?!管理|保险箱))",
+    re.IGNORECASE,
+)
 _CAPTCHA_RE = re.compile(
-    r"(captcha|verification\s*code|图形验证码|滑动验证|安全验证|人机验证|短信验证码)",
+    r"(captcha|verification\s*code|human\s*verification|security\s*verification"
+    r"|图形验证码|滑动验证|滑块验证|安全验证|人机验证|短信验证码|风控验证|身份核验)",
     re.IGNORECASE,
 )
 _PAYMENT_RE = re.compile(
     r"(confirm\s*pay|pay\s*now|确认支付|立即支付|输入支付密码|指纹支付|人脸支付)",
     re.IGNORECASE,
 )
+_BIOMETRIC_PROMPT_RE = re.compile(
+    r"(?:fingerprint\s*(?:auth|verif|unlock|pay)|face\s*(?:id\b|auth|verif|unlock|recognition)"
+    r"|biometric\s*(?:auth|verif|prompt|unlock)|verify\s+your\s+identity"
+    r"|(?:指纹|人脸|面容|声纹|生物)(?:验证|认证|解锁|支付|识别确认)"
+    r"|请验证(?:指纹|人脸|面容|身份))",
+    re.IGNORECASE,
+)
+_BIOMETRIC_INSTRUCTION_RE = re.compile(
+    r"(?:\b(?:place|press|touch|scan|use).{0,25}(?:finger|fingerprint|sensor)\b"
+    r"|(?:fingerprint|face|biometric)\s*(?:auth|verif|pay|prompt)"
+    r"|(?:指纹|人脸|面容|声纹|生物)(?:验证|认证|支付|识别确认)"
+    r"|\b(?:look|position).{0,25}(?:camera|face)\b"
+    r"|\b(?:verify|authenticate|confirm).{0,25}(?:fingerprint|face|identity|biometric)\b"
+    r"|请.{0,12}(?:验证|识别|认证).{0,6}(?:指纹|人脸|面容|身份)"
+    r"|请.{0,8}(?:按压|触摸).{0,8}(?:指纹|传感器)"
+    r"|请.{0,8}(?:使用|扫描).{0,8}(?:指纹|人脸|面容)"
+    r"|请.{0,8}手指.{0,8}(?:放|置).{0,8}(?:传感器|指纹)"
+    r"|请.{0,8}(?:看向|正对|对准).{0,8}(?:摄像头|相机|屏幕))",
+    re.IGNORECASE,
+)
+_PERMISSION_GRANT_RE = re.compile(
+    r"(?:仅使用期间允许|始终允许|本次允许|允许访问|允许获取|允许使用|同意授权"
+    r"|allow\s+(?:while\s+using|only\s+this\s+time|all\s+the\s+time|access)"
+    r"|(?:^|\n)\s*(?:允许|同意|授权|启用|开启|开始录制|立即开始|allow|grant|enable|start\s+now)\s*(?:$|\n))",
+    re.IGNORECASE,
+)
+_PERMISSION_REQUEST_RE = re.compile(
+    r"(?:是否允许|请求.{0,16}(?:权限|访问|使用|获取|录制)|允许.{0,24}(?:吗|？|\?)"
+    r"|(?:允许|授权|启用).{0,24}(?:访问|使用|获取|读取|录制|控制)"
+    r"|\ballow\b.{0,40}\bto\s+(?:access|use|record|control)\b"
+    r"|\b(?:allow|grant).{0,60}\?|\b(?:wants|would\s+like)\s+to\s+(?:access|use|record))",
+    re.IGNORECASE,
+)
+_PERMISSION_CONTEXT_RE = re.compile(
+    r"(?:权限|位置信息|定位|相机|摄像头|麦克风|录音|通讯录|联系人|存储|相册|短信|通话"
+    r"|剪贴板|日历|传感器|悬浮窗|无障碍|辅助功能|屏幕录制|录制屏幕|屏幕共享|屏幕内容|读取通知"
+    r"|投屏|屏幕投射|虚拟专用网络|安装应用|通知使用权"
+    r"|permission|location|camera|microphone|contacts|storage|sms|call\s*log|clipboard"
+    r"|accessibility|screen\s*(?:record|captur|shar)|notification\s*access|calendar|photos"
+    r"|overlay|\bvpn\b|install\s+apps|record.{0,12}screen|control.{0,12}device)",
+    re.IGNORECASE,
+)
 _PERMISSION_BUNDLES: frozenset[str] = frozenset(
     {
         "com.ohos.permissionmanager",
         "com.huawei.hmos.permissionmanager",
+        "com.ohos.security.privacycenter",
+    }
+)
+_BIOMETRIC_BUNDLES: frozenset[str] = frozenset(
+    {
+        "com.ohos.useriam.authwidget",
+        "com.huawei.hmos.useriam.authwidget",
     }
 )
 
@@ -86,36 +170,92 @@ def _collect_passive_descendant_text(
 
 
 def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
-    """Detect safety guardrail signals (password, captcha, payment, permission dialog).
+    """Detect contextual password, verification, payment, and permission signals.
 
     Returns only sanitized enum-like signal labels, never user text or secrets.
     """
-    signals: dict[str, None] = {}
+    signals: set[str] = set()
+    has_permission_grant = False
+    has_permission_context = False
+    has_password_label = False
+    keypad_digits: set[str] = set()
 
-    for bundle in tree.bundle_names:
-        if bundle in _PERMISSION_BUNDLES:
-            signals.setdefault("system_permission_dialog", None)
-
-    def _walk(node: UiNode) -> None:
+    def _walk(node: UiNode, labels: tuple[str, ...] = (), *, in_menu: bool = False) -> None:
+        nonlocal has_permission_grant, has_permission_context, has_password_label
         if not node.visible:
             return
         if node.bundle_name in _PERMISSION_BUNDLES:
-            signals.setdefault("system_permission_dialog", None)
-        combined = " ".join(
-            part for part in (node.type, node.id, node.text, node.description, node.hint) if part
+            signals.add("system_permission_dialog")
+        if node.bundle_name in _BIOMETRIC_BUNDLES:
+            signals.add("biometric_prompt")
+
+        short_type = node.type.rsplit(".", 1)[-1]
+        is_input = short_type in _INPUT_CONTROL_TYPES
+        in_menu = in_menu or short_type in {"MenuItem", "ListItem"} or (
+            node.clickable and short_type == "Row"
         )
+        text_parts = " ".join(part for part in (node.text, node.description, node.hint) if part)
+        # Bound ID tokens also cover camelCase, without matching e.g. "spinning_input".
+        identifier = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", node.id).replace("_", " ")
+        input_context = f"{identifier} {text_parts}"
+        search_metadata = f"{identifier} {node.description} {node.hint}"
+        combined = " ".join(part for part in (node.type, node.id, text_parts) if part)
+
+        if (
+            short_type in {"PasswordInput", "PinInput"}
+            or ((is_input or not in_menu) and _PASSWORD_ID_RE.search(identifier))
+            or _PASSWORD_PROMPT_RE.search(text_parts)
+            or (
+                is_input
+                and not _SEARCH_INPUT_RE.search(search_metadata)
+                and (
+                    _PASSWORD_INPUT_RE.search(input_context)
+                    or any(_PASSWORD_LABEL_RE.fullmatch(label.strip()) for label in labels)
+                )
+            )
+        ):
+            signals.add("password_field")
+
+        if not in_menu and _PASSWORD_LABEL_RE.fullmatch(text_parts.strip()):
+            has_password_label = True
+        if node.clickable and node.text.strip() in "0123456789" and len(node.text.strip()) == 1:
+            keypad_digits.add(node.text.strip())
+
         if combined:
-            if "password" in node.type.lower() or _PASSWORD_RE.search(combined):
-                signals.setdefault("password_field", None)
             if _CAPTCHA_RE.search(combined):
-                signals.setdefault("captcha_prompt", None)
+                signals.add("captcha_prompt")
             if _PAYMENT_RE.search(combined):
-                signals.setdefault("payment_confirmation", None)
+                signals.add("payment_confirmation")
+            if _BIOMETRIC_INSTRUCTION_RE.search(text_parts) or (
+                not in_menu and _BIOMETRIC_PROMPT_RE.search(text_parts)
+            ):
+                signals.add("biometric_prompt")
+            if text_parts:
+                if any(
+                    _PERMISSION_GRANT_RE.search(part) or _PERMISSION_REQUEST_RE.search(part)
+                    for part in (node.text, node.description, node.hint)
+                ):
+                    has_permission_grant = True
+                if _PERMISSION_CONTEXT_RE.search(text_parts):
+                    has_permission_context = True
+
+        # A separate passive label can name an otherwise unlabeled password/PIN input.
+        child_labels = tuple(
+            label
+            for sibling in (node, *node.children)
+            if sibling.visible and not sibling.clickable
+            for label in (sibling.text, sibling.description, sibling.hint)
+            if label
+        )
         for child in node.children:
-            _walk(child)
+            _walk(child, child_labels, in_menu=in_menu)
 
     _walk(tree.root)
-    return tuple(signals.keys())
+    if has_password_label and len(keypad_digits) == 10:
+        signals.add("password_field")
+    if has_permission_grant and has_permission_context:
+        signals.add("system_permission_dialog")
+    return tuple(signal for signal in SENSITIVE_SIGNAL_ENUM if signal in signals)
 
 
 def build_compact_snapshot(
@@ -139,12 +279,20 @@ def build_compact_snapshot(
     screen_w, screen_h = tree.screen_size
     folded_paths: set[str] = set()
     raw_candidates: list[tuple[int, bool, UiNode, str]] = []
+    effective_bundles: dict[str, str] = {}
     order_counter = 0
 
-    def _visit(node: UiNode) -> None:
+    def _visit(node: UiNode, parent_bundle: str = "", parent_window: str = "") -> None:
         nonlocal order_counter
         if not node.visible:
             return
+        # Some official dumps put the bundle only on the window ancestor.
+        # An explicitly different window without its own bundle remains unresolved.
+        bundle = node.bundle_name or (
+            parent_bundle if not node.window_id or node.window_id == parent_window else ""
+        )
+        window = node.window_id or parent_window
+        effective_bundles[node.path] = bundle
 
         valid_in_view = node.bounds.is_valid and node.bounds.intersects_viewport(
             screen_w, screen_h
@@ -182,7 +330,7 @@ def build_compact_snapshot(
             order_counter += 1
 
         for child in node.children:
-            _visit(child)
+            _visit(child, bundle, window)
 
     _visit(tree.root)
 
@@ -223,7 +371,7 @@ def build_compact_snapshot(
                 selected=node.selected,
                 focused=node.focused,
                 path=node.path,
-                bundle_name=node.bundle_name,
+                bundle_name=effective_bundles[node.path],
             )
         )
 

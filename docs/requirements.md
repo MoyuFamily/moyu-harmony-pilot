@@ -18,6 +18,14 @@
 2. **作为边缘任务执行节点（Pull Bridge Mode）**：可通过标准、服务端无关的单向 HTTPS 出站协议，将 NAT 内网中的纯血鸿蒙真机安全接入任意兼容的外部调度器或控制面，在不暴露本地端口和调试通道的前提下完成远程任务派发与脱敏回执回收。
 3. **原生面向 AI Agent 时代（Agent-Friendly First）**：从接口契约、UI 语义压缩、自描述 Schema、防失控护栏到文档与 Skill 规范，原生适配现代 Coding Agent 与 Runtime Agent（CLI-First，并支持可选轻量 MCP 薄封装），让人类开发者与 AI Agent 都能低 Token、低歧义、高安全性地开发、调试和编排纯血鸿蒙真机任务。
 
+### 长期优先方向与变更验收
+
+持续降低外部插件从创建、调试、离线测试、接入到升级维护的成本，并同时提升开发侧和运行侧 Agent 的易用性。这是长期优先方向，也是后续设计取舍和验收依据：
+
+- **外部开发与开发侧 Agent**：优先提供清晰稳定的公开接口、版本兼容说明、自描述契约、通用示例和离线测试路径；插件应能在独立仓库开发和验证，避免要求修改核心代码或引入不必要的配置与依赖。涉及契约变更时同步文档、示例或测试，并说明兼容性及必要的迁移步骤。
+- **运行侧 Agent**：能力、参数和副作用应可发现，结果、错误和可重试性应可机器理解；保持紧凑观测、稳定退出码，以及 `human_required` 人工接管、有副作用动作 `unknown` 只读对账和交互不确定时重新观测的路径，避免靠猜测或重复提交完成任务。
+- **决策与验收**：涉及插件、执行或接入面的变更须评估上述成本与兼容影响，并以独立插件离线用例、机器可读契约及相关安全/幂等测试验证。降低成本不得削弱白名单、隐私保护、提交前账本预留和不确定状态禁止自动重放等约束；具体业务与私有配置继续留在仓外。
+
 ---
 
 ## 2. 范围与非目标（Scope & Non-Goals）
@@ -138,7 +146,7 @@ hdc (仅依赖 Python 标准库)
   - `[mcp]`：可选标准 MCP Server 运行时依赖。
   - `[vision-macos]`：macOS 原生 Vision OCR 绑定（可选）。
   - `[vision-rapidocr]`：跨平台 RapidOCR 后端（可选）。
-  - `[dev]`：`pytest`、`ruff`、`mypy` 等开发工具。
+  - `[dev]`：`pytest`、`ruff` 等开发工具；静态类型检查仍在[路线图](roadmap.md)中规划。
 
 ---
 
@@ -197,7 +205,7 @@ hdc (仅依赖 Python 标准库)
    - 输入截图路径/字节，输出结构化 `TextBox(text, bounds, confidence)` 列表，支持按文本/正则定位屏幕点击坐标（解决 WebView / Canvas / 图片按钮在 `dumpLayout` 中无文字节点的问题）。
 2. **可选后端实现**：
    - 默认不强制安装任何重依赖；未配置 OCR 后端时明确抛出可识别的 `VisionUnavailableError`。
-   - 第一批规划适配器：`MacOSVisionOcrEngine`（利用 macOS 原生 Vision 框架，零外部模型下载、低延迟）与可选 `RapidOcrEngine`（跨平台 Linux/macOS 通用）。
+   - 已提供 `MacOSVisionOcrEngine`（利用 macOS 原生 Vision 框架）与可选 `RapidOcrEngine`（跨平台 Linux/macOS 通用）。
 3. **通用弹窗兜底（Popup Watcher）**：
    - 提供声明式规则辅助，用于在页面等待期间识别并处理常见的「稍后再说 / 关闭 / 跳过 / 取消更新」类非破坏性弹窗，且仅在显式启用的白名单规则内触发。
 
@@ -243,6 +251,7 @@ hdc (仅依赖 Python 标准库)
 | `harmony-pilot schema` | 输出完整 CLI 命令、状态枚举、退出码与全局契约 JSON Schema（自描述） |
 | `harmony-pilot plugins list` | 列出已发现的内置与外部插件、副作用级别及其远程白名单状态 |
 | `harmony-pilot plugins describe <action_id>` | 输出单个 Action 插件的参数 JSON Schema、返回指标说明与安全级别 |
+| `harmony-pilot plugins validate <action_id> [--params-json ...] [--idempotency-key ...]` | **已实现，未发布**：无设备预检参数和有副作用动作的幂等键；不检查设备或远程白名单，不执行动作；发现阶段会加载可信插件 |
 | `harmony-pilot run --device <alias> --action <id> [--idempotency-key ...] [--params-json ...] [--dry-run]` | 本地执行单个动作（`--dry-run` 仅校验配置/设备/参数，不触发 UI 交互） |
 | `harmony-pilot serve --config <path>` | 启动 Pull Bridge 常驻守护进程（对接任意实现 `bridge-protocol` 的远端 Broker） |
 
@@ -280,7 +289,7 @@ hdc (仅依赖 Python 标准库)
    - **CLI-First**：任何具备终端能力的 Coding Agent 可直接以零额外依赖调用 `harmony-pilot ... --json`。
    - **可选 MCP Server（`moyu_harmony_pilot.mcp`，`[mcp]` optional extra）**：仅作为薄协议转发层，直接复用 `actions / device / ui` 内核与安全门控，严格区分两种运行模式：
      - **Safe Mode（默认）**：仅暴露只读观测工具（设备列表、健康遥测、紧凑 UI 快照、截屏）和白名单 `run_action`；
-     - **Local Interactive Lab Mode（仅本地显式开启，绝不经远程 Bridge 暴露）**：用于本机探索新 App 或辅助开发外部插件，允许经授权的本地 Agent 按 `@eN` 引用执行受限步进操作（点击引用、滑动、返回），并在每步后自动返回最新紧凑快照与 `changed` 状态差分。
+     - **Local Interactive Lab Mode（仅本地显式开启，绝不经远程 Bridge 暴露）**：用于本机探索新 App 或辅助开发外部插件，支持引用点击与输入、长按、滑动、返回、回桌面、启动应用、等待和滚动查找；直接交互返回最新紧凑快照与 `changed` 状态差分。
 5. **Agent 防失控护栏（Guardrails）**
    - **步数与耗时硬预算**：交互探索与单任务执行强制设置最大步数与墙钟超时，防止 Agent 陷入死循环。
    - **操作前后差分反馈**：向 Agent 返回前台包名、`layout_hash` 是否变化及新旧焦点变化，防止无效重复点击。

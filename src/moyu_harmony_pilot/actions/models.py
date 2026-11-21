@@ -8,10 +8,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from moyu_harmony_pilot.actions.validation import IDENTIFIER, json_copy, validate_value
 from moyu_harmony_pilot.device import DeviceConfigurationError, HarmonyDevice
+
+if TYPE_CHECKING:
+    from moyu_harmony_pilot.actions.interaction import InteractionSession
+    from moyu_harmony_pilot.ui import CompactSnapshot
+    from moyu_harmony_pilot.vision import PopupWatcher
 
 
 class ActionStatus(StrEnum):
@@ -26,10 +31,16 @@ class ActionStatus(StrEnum):
 
 
 ACTION_API_VERSION = 1
+CONTEXT_API_MIN_VERSION = "0.2.0.dev0"
 
 
 def empty_schema() -> dict[str, Any]:
     return {"type": "object", "properties": {}, "additionalProperties": False}
+
+
+def _relax_required_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Preserve closed properties and scalar bounds while relaxing final-success `required`."""
+    return {key: value for key, value in schema.items() if key != "required"}
 
 
 @dataclass(frozen=True)
@@ -45,26 +56,30 @@ class ActionSpec:
     diagnostic: bool = False
     examples: tuple[dict[str, Any], ...] = ()
     api_version: int = 1
+    inspection_metrics_schema: dict[str, Any] | None = None
+    min_pilot_version: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "examples", tuple(self.examples))
 
     def to_dict(self) -> dict[str, Any]:
-        return json_copy(
-            {
-                "action_id": self.action_id,
-                "version": self.version,
-                "description": self.description,
-                "side_effect": self.side_effect,
-                "params_schema": self.params_schema,
-                "metrics_schema": self.metrics_schema,
-                "timeout_seconds": self.timeout_seconds,
-                "local_only": self.local_only,
-                "diagnostic": self.diagnostic,
-                "examples": list(self.examples),
-                "api_version": self.api_version,
-            }
-        )
+        payload: dict[str, Any] = {
+            "action_id": self.action_id,
+            "version": self.version,
+            "description": self.description,
+            "side_effect": self.side_effect,
+            "params_schema": self.params_schema,
+            "metrics_schema": self.metrics_schema,
+            "inspection_metrics_schema": self.inspection_metrics_schema,
+            "timeout_seconds": self.timeout_seconds,
+            "local_only": self.local_only,
+            "diagnostic": self.diagnostic,
+            "examples": list(self.examples),
+            "api_version": self.api_version,
+            "min_pilot_version": self.min_pilot_version,
+        }
+        copied: dict[str, Any] = json_copy(payload)
+        return copied
 
 
 @dataclass(frozen=True)
@@ -113,9 +128,32 @@ class ActionOutcome:
             }
         )
 
-    def validate(self, spec: ActionSpec) -> ActionOutcome:
+    def validate(self, spec: ActionSpec, *, stage: str = "final") -> ActionOutcome:
+        if stage not in {"inspect", "final"}:
+            raise DeviceConfigurationError("Unknown action receipt stage.")
         payload = self.to_dict()
-        validate_value(payload["metrics"], spec.metrics_schema)
+        status = payload["status"]
+        if stage == "inspect":
+            if status == ActionStatus.ALREADY_DONE.value:
+                schema = spec.metrics_schema
+            elif status == ActionStatus.SUCCEEDED.value:
+                schema = (
+                    spec.inspection_metrics_schema
+                    if spec.inspection_metrics_schema is not None
+                    else _relax_required_schema(spec.metrics_schema)
+                )
+            else:
+                base_schema = (
+                    spec.inspection_metrics_schema
+                    if spec.inspection_metrics_schema is not None
+                    else spec.metrics_schema
+                )
+                schema = _relax_required_schema(base_schema)
+        elif status in {ActionStatus.SUCCEEDED.value, ActionStatus.ALREADY_DONE.value}:
+            schema = spec.metrics_schema
+        else:
+            schema = _relax_required_schema(spec.metrics_schema)
+        validate_value(payload["metrics"], schema)
         return ActionOutcome(**payload)
 
 
@@ -126,6 +164,8 @@ class Inspection:
     status: str = "ready"
     state: Any = None
     metrics: dict[str, int | float | str | bool | None] = field(default_factory=dict)
+    summary: str | None = None
+    error_code: str | None = None
 
 
 class ActionBudgetExceeded(BaseException):
@@ -146,6 +186,11 @@ class ActionContext:
     on_stage: Callable[[str], None] | None = None
     inspection_metrics: dict[str, int | float | str | bool | None] = field(default_factory=dict)
     reconciling: bool = False
+    stage: str | None = None
+    _plugin_min_version: str | None = field(default=None, repr=False, kw_only=True)
+    _interaction: InteractionSession | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @property
     def remaining_timeout(self) -> float:
@@ -162,6 +207,28 @@ class ActionContext:
         if self.steps > self.max_steps:
             raise ActionBudgetExceeded
         _ = self.remaining_timeout
+
+    def interact(self) -> InteractionSession:
+        """Return a context-bound UI session reusing this action's lock, budget, and stage."""
+        from moyu_harmony_pilot.actions.versioning import is_version_compatible
+
+        if self._plugin_min_version is None or not is_version_compatible(
+            self._plugin_min_version, CONTEXT_API_MIN_VERSION
+        ):
+            raise DeviceConfigurationError(
+                f"Context interaction requires min_pilot_version >= {CONTEXT_API_MIN_VERSION}."
+            )
+        if self._interaction is None:
+            from moyu_harmony_pilot.actions.interaction import InteractionSession
+
+            self._interaction = InteractionSession.for_context(self)
+        return self._interaction
+
+    def dismiss_popup(
+        self, watcher: PopupWatcher, *, snapshot: CompactSnapshot | None = None
+    ) -> dict[str, Any] | None:
+        """Dismiss one matching non-sensitive popup during the submit stage."""
+        return self.interact().dismiss_popup(watcher, snapshot=snapshot)
 
 
 class ActionPlugin(ABC):

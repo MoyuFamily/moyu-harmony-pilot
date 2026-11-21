@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from moyu_harmony_pilot.actions import (
     ActionOutcome,
@@ -23,8 +26,12 @@ from moyu_harmony_pilot.device import (
     HarmonyDevice,
     ensure_secure_dir,
 )
-from moyu_harmony_pilot.device.packages import download_hap, hap_metadata
-from moyu_harmony_pilot.hdc import HdcClient
+from moyu_harmony_pilot.device.packages import (
+    PACKAGE_SUFFIXES,
+    download_package,
+    package_metadata,
+)
+from moyu_harmony_pilot.hdc import HdcClient, HdcTransport
 from moyu_harmony_pilot.ui.selector import selector_from_dict
 
 DEVICE = {"--device": {"type": "string"}}
@@ -57,9 +64,58 @@ REF = {"--ref": {"type": "string", "required": True}}
 SELECTOR = {"--selector-json": {"type": "string", "required": True}}
 DIRECTION = {"type": "string", "enum": ["up", "down", "left", "right"], "default": "up"}
 
-OPERATION_SCHEMAS = {
+OPERATION_SCHEMAS: dict[str, Any] = {
+    "ocr": {
+        "description": "Recognize bounded text locally using an optional offline OCR backend.",
+        "side_effect": "readonly",
+        "local_only": True,
+        "options": {
+            **DEVICE,
+            "--backend": {"type": "string", "enum": ["auto", "macos", "rapidocr"],
+                          "default": "auto"},
+            "--max-width": {"type": "integer", "minimum": 1, "maximum": 8192,
+                            "default": 1280},
+            "--timeout": {**TIMEOUT, "default": 30},
+        },
+    },
+    "fixture": {
+        "description": "Capture a redacted candidate layout fixture for manual review.",
+        "side_effect": "subcommand_defined",
+        "local_only": True,
+        "options": {},
+        "subcommands": {
+            "capture": {
+                "side_effect": "readonly",
+                "options": {
+                    **DEVICE,
+                    "--out": OUT,
+                    "--timeout": {**TIMEOUT, "default": 30},
+                    "--keep-text": {"type": "string", "repeatable": True, "default": []},
+                    "--keep-bundle": {"type": "string", "repeatable": True, "default": []},
+                },
+                "manual_review_required": True,
+            },
+        },
+    },
+    "receipts": {
+        "description": "Retain Bridge acknowledgement history and permanent job deduplication.",
+        "options": {},
+        "side_effect": "subcommand_defined",
+        "subcommands": {
+            "prune": {
+                "side_effect": "local_ledger",
+                "options": {
+                    "--database": OUT,
+                    "--bridge-id": {"type": "string", "required": True},
+                    "--older-than-days": {"type": "integer", "required": True,
+                                          "minimum": 1, "maximum": 365000},
+                },
+                "preserves_job_deduplication": True,
+            },
+        },
+    },
     "apps": {
-        "description": "Query bundles and deploy verified local or downloaded HAPs.",
+        "description": "Query bundles and deploy local or downloaded HAP/HSP/APP packages.",
         "options": {},
         "side_effect": "subcommand_defined",
         "subcommands": {
@@ -72,7 +128,7 @@ OPERATION_SCHEMAS = {
                 "side_effect": "local_file",
                 "options": {
                     "--url": {"type": "string", "required": True},
-                    "--out": OUT,
+                    "--out": {**OUT, "description": "Destination .hap, .hsp, or .app file."},
                     "--sha256": {"type": "string"},
                     "--timeout": TIMEOUT,
                 },
@@ -82,8 +138,19 @@ OPERATION_SCHEMAS = {
                 "options": {
                     **DEVICE,
                     "--timeout": {**TIMEOUT, "default": 300},
-                    "--hap": {"type": "string", "repeatable": True, "default": []},
-                    "--url": {"type": "string"},
+                    "--package": {
+                        "type": "string", "repeatable": True, "default": [],
+                        "description": "Local .hap, application-internal .hsp, or .app file.",
+                    },
+                    "--hap": {
+                        "type": "string", "repeatable": True, "default": [],
+                        "description": "Backward-compatible package flag, also accepting .app.",
+                    },
+                    "--url": {
+                        "type": "string",
+                        "description": "Package URL. The URL path determines .app/.hsp format; "
+                        "other paths default to .hap. Use download --out for opaque URLs.",
+                    },
                     "--sha256": {"type": "string"},
                     "--idempotency-key": KEY,
                 },
@@ -185,7 +252,9 @@ OPERATION_SCHEMAS = {
 }
 
 
-def add_operation_parsers(subparsers, shared) -> None:
+def add_operation_parsers(
+    subparsers: argparse._SubParsersAction[Any], shared: argparse.ArgumentParser
+) -> None:
     for name, schema in OPERATION_SCHEMAS.items():
         parser = subparsers.add_parser(name, parents=[shared], help=schema["description"])
         leaves = [(parser, schema)]
@@ -197,7 +266,7 @@ def add_operation_parsers(subparsers, shared) -> None:
             ]
         for leaf, definition in leaves:
             for option, spec in definition["options"].items():
-                kwargs = {"required": spec.get("required", False)}
+                kwargs: dict[str, Any] = {"required": spec.get("required", False)}
                 if spec["type"] == "boolean":
                     kwargs["action"] = "store_true"
                 else:
@@ -208,11 +277,13 @@ def add_operation_parsers(subparsers, shared) -> None:
                     kwargs["choices"] = spec["enum"]
                 if spec.get("repeatable"):
                     kwargs["action"] = "append"
+                if "description" in spec:
+                    kwargs["help"] = spec["description"]
                 leaf.add_argument(option, **kwargs)
 
 
-def _json_object(text: str) -> dict:
-    def unique(pairs):
+def _json_object(text: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result = {}
         for key, value in pairs:
             if key in result:
@@ -231,14 +302,20 @@ def _json_object(text: str) -> dict:
         raise DeviceConfigurationError("Expected a bounded JSON object with unique keys.") from exc
 
 
-def _device(args, *, transport, cwd, env) -> HarmonyDevice:
+def _device(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> HarmonyDevice:
     devices = DeviceRegistry.load_default(args.config, cwd=cwd, env=env)
     hdc = HdcClient(transport=transport, hdc_path=args.hdc_path, env=env)
     profile, _ = devices.resolve(args.device, hdc.list_targets(), require_online=True)
     return HarmonyDevice(hdc, profile, state_dir=args.state_dir)
 
 
-def run_operation(args: argparse.Namespace, *, transport, cwd, env) -> tuple[int, dict, str]:
+def run_operation(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> tuple[int, dict[str, Any], str]:
     definition = OPERATION_SCHEMAS[args.command]
     if "subcommands" in definition:
         definition = definition["subcommands"][args.operation]
@@ -256,6 +333,16 @@ def run_operation(args: argparse.Namespace, *, transport, cwd, env) -> tuple[int
         data = _apps(args, transport=transport, cwd=cwd, env=env)
     elif args.command == "ledger":
         data = _ledger(args, transport=transport, cwd=cwd, env=env)
+    elif args.command == "receipts":
+        from moyu_harmony_pilot.bridge.protocol import identifier
+        from moyu_harmony_pilot.bridge.store import ReceiptStore
+
+        path = Path(args.database)
+        if not path.is_file():
+            raise DeviceConfigurationError("Choose an existing Bridge receipt database.")
+        store = ReceiptStore(path, identifier(args.bridge_id))
+        data = {"archived": store.prune(older_than_days=args.older_than_days),
+                "job_tombstones_retained": True}
     elif args.command == "report":
         source = Path(args.input)
         if source.stat().st_size > 8 * 1024 * 1024:
@@ -272,6 +359,19 @@ def run_operation(args: argparse.Namespace, *, transport, cwd, env) -> tuple[int
         device = _device(args, transport=transport, cwd=cwd, env=env)
         if args.command == "inspect":
             data = capture_inspector(device, args.out, timeout=args.timeout)
+        elif args.command == "ocr":
+            from moyu_harmony_pilot.actions.observation import capture_ocr
+
+            data = capture_ocr(
+                device, backend=args.backend, max_width=args.max_width, timeout=args.timeout
+            )
+        elif args.command == "fixture":
+            from moyu_harmony_pilot.actions.fixtures import capture_fixture
+
+            data = capture_fixture(
+                device, args.out, timeout=args.timeout,
+                keep_texts=args.keep_text, keep_bundles=args.keep_bundle,
+            )
         else:
             data = _interact(args, device)
     code = {
@@ -285,20 +385,30 @@ def run_operation(args: argparse.Namespace, *, transport, cwd, env) -> tuple[int
     return code, data, json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def _apps(args, *, transport, cwd, env) -> dict:
+def _apps(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> dict[str, Any]:
     if args.operation == "download":
-        return download_hap(args.url, args.out, sha256=args.sha256, timeout=args.timeout)
+        return download_package(args.url, args.out, sha256=args.sha256, timeout=args.timeout)
     params = {}
     if args.operation == "install":
-        if bool(args.hap) == bool(args.url):
-            raise DeviceConfigurationError("Provide --hap paths or one --url.")
+        packages = [*args.hap, *args.package]
+        if bool(packages) == bool(args.url):
+            raise DeviceConfigurationError("Provide --package/--hap paths or one --url.")
         if args.sha256 and not args.url:
             raise DeviceConfigurationError("--sha256 applies to --url downloads.")
         if args.url:
-            filename = hashlib.sha256(args.url.encode()).hexdigest() + ".hap"
+            try:
+                suffix = Path(unquote(urlsplit(args.url).path)).suffix.lower()
+            except ValueError as exc:
+                raise DeviceConfigurationError("Invalid package URL.") from exc
+            if suffix not in PACKAGE_SUFFIXES:
+                suffix = ".hap"
+            filename = hashlib.sha256(args.url.encode()).hexdigest() + suffix
             directory = ensure_secure_dir(Path(args.state_dir) / "packages")
             metadata = [
-                download_hap(
+                download_package(
                     args.url,
                     directory / filename,
                     sha256=args.sha256,
@@ -306,10 +416,10 @@ def _apps(args, *, transport, cwd, env) -> dict:
                 )
             ]
         else:
-            metadata = [hap_metadata(path) for path in args.hap]
+            metadata = [package_metadata(path) for path in packages]
         identities = {(item["bundle_name"], item["version_code"]) for item in metadata}
         if len(identities) != 1:
-            raise DeviceConfigurationError("All HAPs must have the same bundle and version.")
+            raise DeviceConfigurationError("All packages must have the same bundle and version.")
         bundle, version = identities.pop()
         params = {
             "bundle_name": bundle,
@@ -337,11 +447,15 @@ def _apps(args, *, transport, cwd, env) -> dict:
     return {"alias": device.alias, "action": action, "params": params, **outcome.to_dict()}
 
 
-def _ledger(args, *, transport, cwd, env) -> dict:
+def _ledger(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> dict[str, Any]:
     ledger = ActionLedger(Path(args.state_dir) / "actions.sqlite3")
     if args.operation == "prune":
         return {"removed": ledger.prune(older_than_days=args.older_than_days)}
     device_hash = None
+    profile = None
     if args.device:
         registry = DeviceRegistry.load_default(args.config, cwd=cwd, env=env)
         profile = registry.get_by_alias(args.device)
@@ -366,6 +480,8 @@ def _ledger(args, *, transport, cwd, env) -> dict:
         )
         return {"record": rows[0] if rows else None}
     if args.operation == "resolve":
+        if profile is None:
+            raise DeviceConfigurationError("Resolution requires a configured device alias.")
         actions = ActionRegistry.discover(env=env)
         runner = ActionRunner(actions, state_dir=args.state_dir)
         _, spec, params, _ = runner.prepare(
@@ -402,7 +518,7 @@ def _ledger(args, *, transport, cwd, env) -> dict:
     return {"alias": device.alias, "action": args.action, **outcome.to_dict()}
 
 
-def _interact(args, device) -> dict:
+def _interact(args: argparse.Namespace, device: HarmonyDevice) -> dict[str, Any]:
     session = InteractionSession(device, max_steps=args.max_steps, timeout=args.timeout)
     operation = args.operation
     if operation == "observe":

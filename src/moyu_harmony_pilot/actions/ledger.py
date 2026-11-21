@@ -9,6 +9,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from moyu_harmony_pilot.actions.models import ActionOutcome
 from moyu_harmony_pilot.actions.validation import json_copy
@@ -77,7 +78,7 @@ class ActionLedger:
 
     @staticmethod
     def make_key(
-        serial: str, action_id: str, key: str | None, version: str, params: dict
+        serial: str, action_id: str, key: str | None, version: str, params: dict[str, Any]
     ) -> LedgerKey:
         if not isinstance(key, str) or not key.strip() or len(key) > 256:
             raise DeviceConfigurationError("Mutating actions require a 1–256 character key.")
@@ -117,7 +118,7 @@ class ActionLedger:
             )
             return outcome
 
-    def reserve(self, key: LedgerKey, *, inspection_metrics: dict | None = None) -> None:
+    def reserve(self, key: LedgerKey, *, inspection_metrics: dict[str, Any] | None = None) -> None:
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -154,7 +155,7 @@ class ActionLedger:
     def records(
         self, *, device_hash: str | None = None, action_id: str | None = None,
         status: str | None = None, key_hash: str | None = None, limit: int = 100, offset: int = 0,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         if (type(limit) is not int or not 1 <= limit <= 1000
                 or type(offset) is not int or offset < 0):
             raise DeviceConfigurationError("Invalid ledger page bounds.")
