@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moyu-harmony-pilot"
-version = "0.2.0.dev0"
+version = "0.2.0rc1"
 description = "Production-grade, non-intrusive HarmonyOS NEXT (5/6+) Python automation engine and secure pull-based task bridge."
 readme = "README.md"
 license = "MIT"
@@ -56,6 +56,29 @@ moyu_harmony_pilot = ["py.typed"]
 
 [tool.setuptools.data-files]
 "share/moyu-harmony-pilot/skills/harmony-pilot" = ["skills/harmony-pilot/SKILL.md"]
+"share/moyu-harmony-pilot/plugin-template" = [
+    "examples/plugin-template/.gitignore",
+    "examples/plugin-template/LICENSE",
+    "examples/plugin-template/MANIFEST.in",
+    "examples/plugin-template/README.md",
+    "examples/plugin-template/pyproject.toml",
+    "examples/plugin-template/requirements-test.txt",
+]
+"share/moyu-harmony-pilot/plugin-template/.github/workflows" = [
+    "examples/plugin-template/.github/workflows/contract.yml",
+]
+"share/moyu-harmony-pilot/plugin-template/src/harmony_pilot_example" = [
+    "examples/plugin-template/src/harmony_pilot_example/__init__.py",
+    "examples/plugin-template/src/harmony_pilot_example/battery.py",
+    "examples/plugin-template/src/harmony_pilot_example/toggle.py",
+]
+"share/moyu-harmony-pilot/plugin-template/tests" = [
+    "examples/plugin-template/tests/__init__.py",
+    "examples/plugin-template/tests/__main__.py",
+    "examples/plugin-template/tests/support.py",
+    "examples/plugin-template/tests/test_contract.py",
+    "examples/plugin-template/tests/test_mutating_contract.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -13,6 +13,7 @@ from moyu_harmony_pilot.testing.contracts import (
     assert_unknown_no_replay,
 )
 from moyu_harmony_pilot.testing.fakes import (
+    FakeClickTarget,
     FakeDevice,
     FakeDeviceState,
     FakeHdcTransport,
@@ -23,6 +24,7 @@ from moyu_harmony_pilot.testing.fakes import (
 )
 
 __all__ = [
+    "FakeClickTarget",
     "FakeDevice",
     "FakeDeviceState",
     "FakeHdcTransport",

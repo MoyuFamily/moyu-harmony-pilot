@@ -18,11 +18,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Check out the Pilot SDK development baseline
+      - name: Check out the Pilot SDK test baseline
         uses: actions/checkout@v4
         with:
           repository: MoyuFamily/moyu-harmony-pilot
-          ref: ${{ vars.PILOT_REF || 'main' }}
+          ref: ${{ vars.PILOT_REF || 'v0.2.0rc1' }}
           path: .pilot-sdk
       - name: Install the SDK and both plugin entry points
         run: |

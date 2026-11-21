@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["moyu-harmony-pilot>=0.2.0.dev0,<0.3"]
+dependencies = ["moyu-harmony-pilot>=0.2.0rc1,<0.3"]
 
 [project.entry-points."moyu_harmony_pilot.actions"]
 "example.battery_check" = "harmony_pilot_example.battery:BatteryCheck"

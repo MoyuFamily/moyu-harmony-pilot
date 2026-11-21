@@ -25,7 +25,7 @@ class BatteryContractTests(OfflineTestCase):
         self.assertTrue(description["remote_allowed"])
         for params in description["examples"]:
             self.runner.prepare(ACTION_ID, params, remote=True)
-        self.assertEqual(description["min_pilot_version"], "0.2.0.dev0")
+        self.assertEqual(description["min_pilot_version"], "0.2.0rc1")
         self.assertEqual(self.transport.calls, [])
 
     def test_readonly_execution_and_bounded_receipts(self):

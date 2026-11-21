@@ -4,6 +4,8 @@ Supply a fresh fake and state directory for each scenario. Configure the fixture
 to complete, time out, remain unconfirmed or expose a protected screen before
 calling the appropriate assertion. Helpers return the first receipt for further
 plugin-specific metric assertions and work with both unittest and pytest.
+Configured click targets must all be consumed without mismatches, including when
+the runner converts a failed input into an unknown receipt.
 """
 
 from __future__ import annotations
@@ -97,6 +99,7 @@ def _run_mutating(
     )
     if stage_errors:
         raise AssertionError("Submission reservation contract failed.") from stage_errors[0]
+    fake.transport.assert_click_targets_consumed()
     names = [stage for stage, _ in stages]
     assert names in (["inspect", "submit"], ["inspect", "submit", "confirm"]), (
         f"Expected one inspect/submit cycle, got {names!r}."

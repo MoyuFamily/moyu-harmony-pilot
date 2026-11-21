@@ -2,6 +2,33 @@
 
 本文说明如何在本地查看与运行内置动作、接入外部插件、编写符合规范的 `ActionPlugin` / `IdempotentAction`，以及使用本地视觉标注（SoM）、OCR 和受控交互会话。
 
+## 从离线工程开始
+
+在已安装当前 Pilot 的 Python 环境中，生成一个独立插件工程。命令会同步包名、Python 模块名、动作 ID、测试与 CI 配置，并输出后续命令的 `cwd` 和 `argv`。
+
+```bash
+harmony-pilot plugins init ../team-pilot --namespace team --json
+cd ../team-pilot
+python -m pip install --no-deps -e .
+python -m tests
+harmony-pilot plugins describe team.demo_toggle --json
+harmony-pilot plugins validate team.demo_toggle --params-json '{"enabled":true}' --idempotency-key demo-check --json
+```
+
+目标使用新目录，创建成功后文件清单会随 JSON 返回。包名默认来自目录名，可用 `--package` 单独指定，例如目标路径含空格时使用 `--package team-pilot`。Python 模块名转为小写，并将连续的点、下划线和连字符合并为下划线。工程创建使用 SDK 随包提供的模板文件，独立插件的安装是下一步操作。
+
+生成工程含只读电量检查和三段式开关示例。先运行现成的离线契约，再逐步替换业务逻辑，每次只改对应的实现和测试场景。
+
+| 需要修改的内容 | 主要位置 | 验证入口 |
+| --- | --- | --- |
+| 业务参数、结果和描述 | `src/<模块名>/battery.py` 或 `toggle.py` 的 `ActionSpec` | `plugins describe`、`plugins validate` |
+| 操作前检查、提交与结果核验 | `toggle.py` 的 `inspect`、`submit`、`confirm` | `python -m tests` |
+| 业务界面与异常场景 | `tests/support.py`、`tests/test_mutating_contract.py` | 成功防重、超时后 `unknown`、只读对账、敏感屏与过温断言 |
+| 安装发现与动作 ID | `pyproject.toml` 中的 entry point、实现与测试中的动作 ID | 重新安装后执行 `plugins describe` |
+| Pilot 兼容版本 | 包依赖、`min_pilot_version`、`requirements-test.txt` 与 CI 的 `PILOT_REF` | 对目标 Pilot 版本运行全部离线契约 |
+
+离线测试使用公共 `moyu_harmony_pilot.testing` 和合成界面。改造成真实业务插件时，将包名、控件 ID、检查依据和确认依据替换为目标应用的公开界面契约。已有工程的详细运行步骤见生成目录内的 `README.md`。
+
 ---
 
 ## 1. 查看与运行内置动作
@@ -36,7 +63,7 @@ harmony-pilot run --device harmony-01 --action device.health --dry-run --json
 
 > 安全提示：插件代码与宿主机 Pilot 进程享有相同的运行权限，请只安装和启用经过代码审计的可信插件。
 
-推荐直接从 [独立插件模板](../examples/plugin-template/README.md) 起步，内置了标准包元数据、entry point 契约测试与 macOS/Linux CI 配置。
+可通过 `plugins init` 生成 [独立插件模板](../examples/plugin-template/README.md)，其中包含标准包元数据、entry point 契约测试与 macOS/Linux CI 配置。
 
 Pilot 支持两种外部插件加载方式：
 
@@ -92,9 +119,9 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 1. **`api_version`（动作接口契约版本）**：在 `ActionSpec(api_version=1, ...)` 中显式声明整数版本号（自 `0.1.0.dev1` 起支持；省略时默认 v1）。注册时会对照宿主 `ACTION_API_VERSION` 校验，不兼容则在执行前直接返回 `configuration_error`。`harmony-pilot schema`、`plugins list/describe` 及 Bridge `--check` 都会透出该字段。
 2. **`version`（动作行为版本）**：表示插件自身的业务逻辑版本，并参与幂等账本的请求指纹计算。修改 `version` 后复用旧幂等键会触发校验失败，升级前请保留账本并处理好未决任务。
 3. **包依赖范围**：打包分发的插件在 `pyproject.toml` 中声明支持的 Pilot 版本区间（`project.dependencies`）和 Python 版本区间（`project.requires-python`），并针对支持的每个版本跑通离线契约测试；目录式插件请在 `actions.json` 同级文档中注明环境要求。
-4. 在 `ActionSpec.min_pilot_version` 中声明最低宿主版本，注册与发现时会先校验。使用 `inspection_metrics`、`reconciling`、`inspection_metrics_schema`、`ctx.interact()` 或 `ctx.dismiss_popup()` 的插件应声明 `min_pilot_version="0.2.0.dev0"`，并同步包依赖下限。阶段指标 Schema 与上下文交互接口会拒绝缺失或过低的声明。
+4. 在 `ActionSpec.min_pilot_version` 中声明最低宿主版本，注册与发现时会先校验。`inspection_metrics`、`reconciling`、`inspection_metrics_schema`、`ctx.interact()` 和 `ctx.dismiss_popup()` 从 `0.2.0.dev0` 起提供。新插件可沿用模板的 `min_pilot_version="0.2.0rc1"` 与包依赖下限，阶段指标 Schema 与上下文交互接口会拒绝缺失或过低的声明。
 
-当前开发版本为 `0.2.0.dev0`。最低版本接受 `X.Y.Z` 及规范的 `aN`、`bN`、`rcN`、`.postN`、`.devN` 后缀，按开发版、预发布版、正式版顺序比较。已发布的 `0.1.0` 不含这些新增字段。仅使用原有 Action API v1 的插件可以继续省略最低版本字段。
+当前候选版本为 `0.2.0rc1`。最低版本接受 `X.Y.Z` 及规范的 `aN`、`bN`、`rcN`、`.postN`、`.devN` 后缀，按开发版、预发布版、正式版顺序比较。已有开发插件的 `0.2.0.dev0` 声明仍可注册，升级到包含精确点击断言的模板时，同步更新测试基线。仅使用原有 Action API v1 的插件可以继续省略最低版本字段。
 
 ### 3.2 参数、回执边界与超时控制
 
@@ -205,6 +232,10 @@ harmony-pilot ocr --device harmony-01 --backend auto --max-width 1280 --json
 ## 7. 公共离线测试与候选 Fixture
 
 `moyu_harmony_pilot.testing` 提供 `FakeHdcTransport`、`make_fake_device`、`OfflineTestCase` 和可复用断言。外部插件可复用 `assert_idempotent_success`、`assert_unknown_no_replay`、`assert_pre_submit_blocked`、`assert_readonly` 验证成功防重、不确定状态、过温/敏感屏与只读边界。独立模板含可安装的三段式示例与离线测试，使用方式见[插件模板](../examples/plugin-template/README.md)。
+
+界面流程可通过 `FakeDeviceState.click_targets` 声明按顺序预期的 `FakeClickTarget(node_id, bundle_name)`。Fake 在当前布局内查找唯一、可用的可点击控件，核对点击中心后推进到下一份布局。错误目标会记录失败，公共幂等断言在 Runner 返回后重新检查该记录，预期 `unknown` 的用例也会暴露误点。自定义场景结束时调用 `transport.assert_click_targets_consumed()` 检查失败记录及尚未发生的预期点击。
+
+声明空列表可验证零次点击。省略该字段时，已有 `advance_layout_on_click` 场景继续使用原行为。新模板采用精确目标，并覆盖点击旁边控件时应失败的回归。
 
 采集候选布局使用只读命令。
 

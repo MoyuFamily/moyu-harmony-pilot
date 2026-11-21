@@ -27,6 +27,7 @@ from moyu_harmony_pilot.cli.operations import (
     add_operation_parsers,
     run_operation,
 )
+from moyu_harmony_pilot.cli.scaffold import create_plugin_project
 from moyu_harmony_pilot.cli.schema import build_cli_schema
 from moyu_harmony_pilot.device import (
     DeviceConfigurationError,
@@ -315,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit self-describing JSON Schema for commands, envelopes, and exit codes.",
     )
     p_plugins = subparsers.add_parser(
-        "plugins", parents=[shared], help="Discover and describe trusted local action plugins.",
+        "plugins", parents=[shared], help="Create, discover and validate local action plugins.",
     )
     plugin_commands = p_plugins.add_subparsers(dest="plugin_command", required=True)
     plugin_commands.add_parser("list", parents=[shared], help="List discovered plugins.")
@@ -330,6 +331,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument("action_id")
     p_validate.add_argument("--params-json", default="{}", metavar="JSON")
     p_validate.add_argument("--idempotency-key", default=None, metavar="KEY")
+    p_init = plugin_commands.add_parser(
+        "init", parents=[shared],
+        help="Create an independent plugin project with offline contracts.",
+    )
+    p_init.add_argument("destination", metavar="DIRECTORY")
+    p_init.add_argument(
+        "--namespace", required=True, help="Namespace for the two example action IDs.",
+    )
+    p_init.add_argument(
+        "--package", dest="package_name", default=None, metavar="NAME",
+        help="Distribution name (default: destination directory name).",
+    )
 
     p_run = subparsers.add_parser(
         "run", parents=[shared], help="Execute a local action under device and ledger guards.",
@@ -790,8 +803,13 @@ def _cmd_schema() -> tuple[ExitCode, dict[str, Any], str]:
 
 
 def _cmd_plugins(
-    args: argparse.Namespace, *, env: Mapping[str, str] | None,
+    args: argparse.Namespace, *, env: Mapping[str, str] | None, cwd: Path | None,
 ) -> tuple[ExitCode, dict[str, Any], str]:
+    if args.plugin_command == "init":
+        data = create_plugin_project(
+            args.destination, namespace=args.namespace, package_name=args.package_name, cwd=cwd,
+        )
+        return ExitCode.OK, data, json.dumps(data, ensure_ascii=False, indent=2)
     params = _parse_action_params(args.params_json) if args.plugin_command == "validate" else {}
     registry = ActionRegistry.discover(env=env)
     if args.plugin_command == "describe":
@@ -983,7 +1001,7 @@ def main(
             exit_code, data, human = _cmd_schema()
         elif command == "plugins":
             with redirect_stdout(err), redirect_stderr(err):
-                exit_code, data, human = _cmd_plugins(args, env=env)
+                exit_code, data, human = _cmd_plugins(args, env=env, cwd=cwd)
         elif command == "run":
             with redirect_stdout(err), redirect_stderr(err):
                 exit_code, data, human = _cmd_run(args, transport=transport, cwd=cwd, env=env)

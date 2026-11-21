@@ -111,6 +111,14 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
             name.endswith("/share/moyu-harmony-pilot/skills/harmony-pilot/SKILL.md")
             for name in names
         )
+        for resource in (
+            "pyproject.toml", ".gitignore", ".github/workflows/contract.yml",
+            "src/harmony_pilot_example/toggle.py", "tests/test_mutating_contract.py",
+        ):
+            assert any(
+                name.endswith("/share/moyu-harmony-pilot/plugin-template/" + resource)
+                for name in names
+            ), resource
         metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
         metadata = email.message_from_bytes(archive.read(metadata_name))
         assert metadata["Name"] == project["name"]
@@ -161,7 +169,7 @@ runpy.run_module('tests', run_name='__main__')
         cwd=template, env=environment, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Ran 8 tests" in result.stderr
+    assert "Ran 9 tests" in result.stderr
     assert "skipped" not in result.stderr.lower()
 
     # The copied test entry point rejects skipped contracts and empty suites.
@@ -222,6 +230,65 @@ for suite in (unittest.TestSuite([skipped]), unittest.TestSuite()):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["ok"] is True
+
+    # A wheel-only consumer can create and test its own renamed plugin, outside the checkout.
+    generated = consumer / "community-plugin"
+    result = subprocess.run(  # noqa: S603
+        [str(cli), "plugins", "init", str(generated), "--namespace", "community", "--json"],
+        cwd=consumer, env=isolated_environment,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    scaffold = json.loads(result.stdout)["data"]
+    assert scaffold["module_name"] == "community_plugin"
+    assert scaffold["action_ids"] == ["community.battery_check", "community.demo_toggle"]
+    workflow = (generated / ".github/workflows/contract.yml").read_text(encoding="utf-8")
+    assert "vars.PILOT_REF || 'v" + project["version"] + "'" in workflow
+    generated_artifacts = tmp_path / "community-artifacts"
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(generated_artifacts)],
+        cwd=generated, env=build_environment,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run(  # noqa: S603
+        [
+            str(consumer_python), "-m", "pip", "install", "--no-index", "--no-deps",
+            str(next(generated_artifacts.glob("*.whl"))),
+        ],
+        cwd=consumer, env=isolated_environment,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run(  # noqa: S603
+        [
+            str(consumer_python), "-m", "pip", "install", "--no-index", "--no-deps",
+            "-r", str(generated / "requirements-test.txt"),
+        ],
+        cwd=generated, env=isolated_environment,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run(  # noqa: S603
+        [str(consumer_python), "-m", "pip", "check"],
+        cwd=generated, env=isolated_environment,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run(  # noqa: S603
+        [str(consumer_python), "-m", "tests"], cwd=generated, env=isolated_environment,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Ran 9 tests" in result.stderr
+    for action_id in scaffold["action_ids"]:
+        result = subprocess.run(  # noqa: S603
+            [str(cli), "plugins", "describe", action_id, "--json"],
+            cwd=consumer, env=isolated_environment,
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout)["data"]["action_id"] == action_id
 
     config = consumer / "mypy.ini"
     config.write_text("[mypy]\nstrict = true\n", encoding="utf-8")

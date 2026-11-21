@@ -10,7 +10,7 @@ class BatteryCheck(ActionPlugin):
         action_id="example.battery_check",
         version="1.0",
         api_version=1,
-        min_pilot_version="0.2.0.dev0",
+        min_pilot_version="0.2.0rc1",
         description="Check the current battery level against a minimum.",
         side_effect="readonly",
         timeout_seconds=30,

@@ -21,6 +21,7 @@ from unittest.mock import patch
 
 from moyu_harmony_pilot.device import DeviceProfile, HarmonyDevice
 from moyu_harmony_pilot.hdc import CommandResult, HdcClient, HdcErrorKind, HdcTimeoutError
+from moyu_harmony_pilot.ui import UiParseError, build_compact_snapshot, parse_layout_json
 
 HdcCall = tuple[str | None, tuple[str, ...], float]
 
@@ -65,6 +66,20 @@ def make_layout(
     })
 
 
+@dataclass(frozen=True)
+class FakeClickTarget:
+    """Require a click at the center of one visible node with this exact ID and bundle."""
+
+    node_id: str
+    bundle_name: str
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(value, str) or not value.strip() for value in (
+            self.node_id, self.bundle_name,
+        )):
+            raise ValueError("Fake click targets require a nonempty node ID and bundle name.")
+
+
 @dataclass
 class FakeDeviceState:
     """Mutable, per-target fixture data, including deterministic failure injection.
@@ -73,6 +88,13 @@ class FakeDeviceState:
     ``timeout_after_mutation`` applies the synthetic effect before losing its
     acknowledgement, allowing realistic uncertain-submission tests. Exact
     ``shell_results`` overrides support additional commands without subprocesses.
+
+    ``click_targets=None`` keeps the legacy click behavior. A list enables ordered
+    target checks and advances the layout after each matching click. An empty list
+    rejects every click. Matching attempts consume a target even when an injected
+    timeout or shell override prevents its effect. Call
+    ``transport.assert_click_targets_consumed()`` after the scenario to detect
+    missing clicks and recorded mismatches, including errors caught by the runner.
     """
 
     serial: str = "SYNTHETIC_PLUGIN_DEVICE"
@@ -91,6 +113,9 @@ class FakeDeviceState:
     timeout_on_cmd_prefix: str | None = None
     timeout_after_mutation: bool = False
     shell_results: dict[tuple[str, ...], CommandResult | Exception] = field(default_factory=dict)
+    click_targets: list[FakeClickTarget] | None = None
+    click_target_index: int = field(default=0, init=False)
+    click_failures: list[str] = field(default_factory=list, init=False)
 
     def advance_layout(self) -> None:
         self.layout_index = min(self.layout_index + 1, len(self.layouts) - 1)
@@ -139,6 +164,18 @@ class FakeHdcTransport:
     @property
     def mutating_calls(self) -> list[HdcCall]:
         return [call for call in self.calls if not _readonly_call(call[1])]
+
+    def assert_click_targets_consumed(self) -> None:
+        """Reject recorded click mismatches and any unconsumed targets on every device."""
+        for state in self.devices.values():
+            assert not state.click_failures, (
+                "Click target checks failed.\n" + "\n".join(state.click_failures)
+            )
+            if state.click_targets is not None:
+                assert state.click_target_index == len(state.click_targets), (
+                    f"Consumed {state.click_target_index} of {len(state.click_targets)} "
+                    "expected click targets."
+                )
 
     def all_remote_tmp_files(self) -> dict[str, list[str]]:
         result = {}
@@ -193,16 +230,65 @@ class FakeHdcTransport:
         result = CommandResult(argv, -9, "", "", int(timeout * 1000), HdcErrorKind.TIMEOUT)
         raise HdcTimeoutError("Synthetic hdc timeout.", result=result)
 
+    @staticmethod
+    def _expect_click(state: FakeDeviceState, tokens: tuple[str, ...]) -> None:
+        assert state.click_targets is not None
+        assert state.click_target_index < len(state.click_targets), (
+            "Unexpected click after all expected click targets were consumed."
+        )
+        expected = state.click_targets[state.click_target_index]
+        assert isinstance(expected, FakeClickTarget), "Expected a FakeClickTarget rule."
+        assert len(tokens) == 5, "Expected a click with exactly two integer coordinates."
+        try:
+            point = (int(tokens[3]), int(tokens[4]))
+        except ValueError as exc:
+            raise AssertionError("Click coordinates must be integers.") from exc
+        assert 0 <= state.layout_index < len(state.layouts), "Invalid current layout index."
+        layout = state.layouts[state.layout_index]
+        assert isinstance(layout, str), "Expected layout JSON text."
+        tree = parse_layout_json(layout)
+        # Keep every visible candidate so the usual compact limit cannot hide duplicates.
+        snapshot = build_compact_snapshot(tree, max_elements=tree.node_count)
+        matches = [
+            element for element in snapshot.elements
+            if element.id == expected.node_id and element.bundle_name == expected.bundle_name
+        ]
+        assert len(matches) == 1, (
+            f"Expected one visible click target {expected!r}, found {len(matches)}."
+        )
+        element = matches[0]
+        assert element.enabled and element.clickable, "Click target must be enabled and clickable."
+        assert point == element.center, (
+            f"Expected click at target center {element.center}, received {point} for {expected!r}."
+        )
+        width, height = snapshot.screen_size
+        assert 0 <= point[0] < width and 0 <= point[1] < height, (
+            "Click target center must be inside the display."
+        )
+        state.click_target_index += 1
+
     def _shell(
         self, state: FakeDeviceState, argv: tuple[str, ...], timeout: float,
     ) -> CommandResult:
         command = argv[1]
-        if state.timeout_on_cmd_prefix and command.startswith(state.timeout_on_cmd_prefix):
+        if (state.click_targets is None and state.timeout_on_cmd_prefix
+                and command.startswith(state.timeout_on_cmd_prefix)):
             self._timeout(argv, timeout)
         try:
             tokens = tuple(shlex.split(command))
         except ValueError:
             return CommandResult(argv, 1, "", "Invalid fake shell quoting", 1)
+        if state.click_targets is not None and tokens[:3] == (
+            "uitest", "uiInput", "click",
+        ):
+            try:
+                self._expect_click(state, tokens)
+            except (AssertionError, UiParseError) as exc:
+                message = f"Click target {state.click_target_index + 1} failed. {exc}"
+                state.click_failures.append(message)
+                return CommandResult(argv, 1, "", message, 1)
+        if state.timeout_on_cmd_prefix and command.startswith(state.timeout_on_cmd_prefix):
+            self._timeout(argv, timeout)
         override = state.shell_results.get(tokens)
         if isinstance(override, Exception):
             raise override
@@ -247,7 +333,9 @@ class FakeHdcTransport:
                 "dircFling", "inputText", "keyEvent",
             }:
                 return CommandResult(argv, 1, "", "Unsupported fake UI input", 1)
-            if state.advance_layout_on_click and tokens[2] == "click":
+            if tokens[2] == "click" and (
+                state.click_targets is not None or state.advance_layout_on_click
+            ):
                 state.advance_layout()
             output = "ok"
         elif tokens in {("power-shell", "wakeup"), ("power-shell", "suspend")}:

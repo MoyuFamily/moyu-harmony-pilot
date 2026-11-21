@@ -183,15 +183,16 @@ def build_cli_schema() -> dict[str, Any]:
                              "harmony-pilot serve --config bridge.local.json --json"],
             },
             "plugins": {
-                "side_effect": "readonly",
-                "description": "Discover trusted installed and explicitly configured plugins.",
+                "side_effect": "subcommand_defined",
+                "description": "Create projects and discover or validate trusted local plugins.",
                 "options": {},
                 "subcommands": {
-                    "list": {"options": {}},
-                    "describe": {"arguments": {"action_id": {
+                    "list": {"options": {}, "side_effect": "readonly"},
+                    "describe": {"side_effect": "readonly", "arguments": {"action_id": {
                         "type": "string", "required": True,
                     }}},
                     "validate": {
+                        "side_effect": "readonly",
                         "description": (
                             "Validate plugin metadata, parameters and any required idempotency "
                             "key offline; does not check a device or execute the action."
@@ -224,10 +225,63 @@ def build_cli_schema() -> dict[str, Any]:
                             },
                         },
                     },
+                    "init": {
+                        "side_effect": "local_file",
+                        "description": (
+                            "Create a new independent plugin directory with two examples and "
+                            "offline contracts using bundled files."
+                        ),
+                        "arguments": {"destination": {"type": "string", "required": True}},
+                        "options": {
+                            "--namespace": {
+                                "type": "string", "required": True, "maxLength": 114,
+                                "description": (
+                                    "Action ID prefix starting with a letter, followed by "
+                                    "letters, digits, underscores, periods or hyphens."
+                                ),
+                            },
+                            "--package": {
+                                "type": "string",
+                                "description": (
+                                    "Distribution name, defaults to directory name. Its normalized "
+                                    "module must be a valid unreserved Python identifier."
+                                ),
+                            },
+                        },
+                        "result_schema": {
+                            "type": "object",
+                            "required": [
+                                "path", "package_name", "module_name", "action_ids",
+                                "files", "next_steps",
+                            ],
+                            "properties": {
+                                "path": {"type": "string"},
+                                "package_name": {"type": "string"},
+                                "module_name": {"type": "string"},
+                                "action_ids": {"type": "array", "items": {"type": "string"}},
+                                "files": {"type": "array", "items": {"type": "string"}},
+                                "next_steps": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["cwd", "argv"],
+                                        "properties": {
+                                            "cwd": {"type": "string"},
+                                            "argv": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
                 },
                 "examples": ["harmony-pilot plugins list --json",
                              "harmony-pilot plugins describe device.health --json",
-                             "harmony-pilot plugins validate device.health --json"],
+                             "harmony-pilot plugins validate device.health --json",
+                             "harmony-pilot plugins init ./team-pilot --namespace team --json"],
             },
             "run": {
                 "side_effect": "action_defined",

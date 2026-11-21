@@ -10,6 +10,7 @@ import pytest
 from moyu_harmony_pilot.actions import ActionOutcome, ActionRegistry
 from moyu_harmony_pilot.cli import build_cli_schema, build_parser
 from moyu_harmony_pilot.device import DeviceLock
+from moyu_harmony_pilot.testing import offline_guard
 from tests.fakes import BATTERY_61_OVERHEATED, FakeDeviceState, FakeHdcTransport
 from tests.test_actions import SampleMutation
 from tests.test_cli import _parse_single_json_envelope, _run_cli
@@ -169,7 +170,8 @@ def test_plugin_validate_keeps_plugin_output_off_json_stdout(cli_setup, monkeypa
     assert not transport.calls
 
 
-def test_plugin_validate_flags_match_introspection_schema():
+@pytest.mark.parametrize("subcommand", ["init", "validate"])
+def test_plugin_flags_match_introspection_schema(subcommand):
     parser = build_parser()
     commands = next(
         action.choices for action in parser._actions if isinstance(action.choices, dict)
@@ -178,11 +180,58 @@ def test_plugin_validate_flags_match_introspection_schema():
     subcommands = next(
         action.choices for action in plugins._actions if isinstance(action.choices, dict)
     )
-    flags = {flag for action in subcommands["validate"]._actions for flag in action.option_strings}
+    flags = {flag for action in subcommands[subcommand]._actions for flag in action.option_strings}
     schema = build_cli_schema()
-    contract = schema["commands"]["plugins"]["subcommands"]["validate"]
+    contract = schema["commands"]["plugins"]["subcommands"][subcommand]
     shared = set(schema["global_options"]) - {"--version"}
     assert flags == set(contract["options"]) | shared | {"-h", "--help"}
+
+
+@pytest.mark.parametrize("argv", [
+    ["--json", "plugins", "init"],
+    ["plugins", "--json", "init"],
+    ["plugins", "init", "--json"],
+])
+def test_plugin_init_creates_a_project_without_discovery_or_device_io(
+    argv, tmp_path, monkeypatch,
+):
+    def unexpected_discovery(**kwargs):
+        raise AssertionError("Project creation loaded installed plugin code.")
+
+    monkeypatch.setattr(ActionRegistry, "discover", unexpected_discovery)
+    transport = FakeHdcTransport([])
+    with offline_guard():
+        code, out, err = _run_cli(
+            [*argv, "team-pilot", "--namespace", "team"],
+            transport=transport, cwd=tmp_path, env={},
+        )
+    assert code == 0 and err == "", out
+    payload = _parse_single_json_envelope(out)
+    data = payload["data"]
+    assert data["path"] == str(tmp_path / "team-pilot")
+    assert data["package_name"] == "team-pilot"
+    assert data["module_name"] == "team_pilot"
+    assert data["action_ids"] == ["team.battery_check", "team.demo_toggle"]
+    assert (tmp_path / "team-pilot" / "src" / "team_pilot" / "toggle.py").is_file()
+    contract = build_cli_schema()["commands"]["plugins"]["subcommands"]["init"]
+    assert contract["side_effect"] == "local_file"
+    assert set(data) == set(contract["result_schema"]["required"])
+    assert transport.calls == []
+    assert not (tmp_path / ".state").exists()
+
+
+def test_plugin_init_returns_configuration_error_for_existing_destination(tmp_path):
+    destination = tmp_path / "team-pilot"
+    destination.mkdir()
+    existing = destination / "README.md"
+    existing.write_text("Existing community project", encoding="utf-8")
+    code, out, err = _run_cli(
+        ["plugins", "init", str(destination), "--namespace", "team", "--json"], env={},
+    )
+    assert code == 2 and err == ""
+    assert _parse_single_json_envelope(out)["error"]["code"] == "configuration_error"
+    assert existing.read_text(encoding="utf-8") == "Existing community project"
+    assert sorted(path.name for path in destination.iterdir()) == ["README.md"]
 
 
 def test_run_builtin_and_dry_run(cli_setup):

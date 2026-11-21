@@ -251,7 +251,7 @@ hdc (仅依赖 Python 标准库)
 | `harmony-pilot schema` | 输出完整 CLI 命令、状态枚举、退出码与全局契约 JSON Schema（自描述） |
 | `harmony-pilot plugins list` | 列出已发现的内置与外部插件、副作用级别及其远程白名单状态 |
 | `harmony-pilot plugins describe <action_id>` | 输出单个 Action 插件的参数 JSON Schema、返回指标说明与安全级别 |
-| `harmony-pilot plugins validate <action_id> [--params-json ...] [--idempotency-key ...]` | **已实现，未发布**：无设备预检参数和有副作用动作的幂等键；不检查设备或远程白名单，不执行动作；发现阶段会加载可信插件 |
+| `harmony-pilot plugins validate <action_id> [--params-json ...] [--idempotency-key ...]` | **0.2.0rc1 已实现**，加载可信插件后离线预检参数与有副作用动作的幂等键，设备和远程白名单在实际执行时校验 |
 | `harmony-pilot run --device <alias> --action <id> [--idempotency-key ...] [--params-json ...] [--dry-run]` | 本地执行单个动作（`--dry-run` 仅校验配置/设备/参数，不触发 UI 交互） |
 | `harmony-pilot serve --config <path>` | 启动 Pull Bridge 常驻守护进程（对接任意实现 `bridge-protocol` 的远端 Broker） |
 

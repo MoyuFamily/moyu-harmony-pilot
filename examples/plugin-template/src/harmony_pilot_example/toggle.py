@@ -21,7 +21,7 @@ class DemoToggle(IdempotentAction):
         action_id="example.demo_toggle",
         version="1.0",
         api_version=1,
-        min_pilot_version="0.2.0.dev0",
+        min_pilot_version="0.2.0rc1",
         description="Set and verify the checked state of the synthetic demo toggle.",
         side_effect="mutating",
         timeout_seconds=30,
