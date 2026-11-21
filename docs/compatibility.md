@@ -15,6 +15,21 @@
 
 分发测试会检查 `py.typed`、元数据、独立插件模板及其离线契约，随后在干净虚拟环境中离线安装 wheel，运行 CLI 自描述和下游 mypy 正反例。CI 定义见 [ci.yml](../.github/workflows/ci.yml)。
 
+### 2026-11-21 四组合 CI 验收
+
+提交 `d8ddbf659282180ce7626faeb3745384fd800e70` 的四个组合全部通过编译、ruff、830 项离线测试、sdist/wheel 构建、twine 元数据校验、CLI 自描述及 66 个源码文件的严格 mypy 检查。[Actions 运行记录](https://github.com/MoyuFamily/moyu-harmony-pilot/actions/runs/44903154679)
+
+| 实际宿主机 | runner 镜像版本 | Python | 离线测试 | 结果 |
+| --- | --- | --- | --- | --- |
+| Ubuntu 26.04.1 LTS，x64 | `ubuntu-26.04` / `20261116.202.1` | 3.11.18 | 830 通过，23.41 秒 | 通过 |
+| Ubuntu 26.04.1 LTS，x64 | `ubuntu-26.04` / `20261116.202.1` | 3.12.16 | 830 通过，30.12 秒 | 通过 |
+| macOS 26.7.2，arm64 | `macos-26-arm64` / `20261117.0516.1` | 3.11.9 | 830 通过，24.54 秒 | 通过 |
+| macOS 26.7.2，arm64 | `macos-26-arm64` / `20261117.0516.1` | 3.12.10 | 830 通过，20.38 秒 | 通过 |
+
+本次使用 pytest 9.2.0、ruff 0.17.6、mypy 2.4.1、build 1.6.1 和 twine 7.0.0。Linux 复验覆盖 macOS 可选 OCR 适配器的类型分析修复，macOS 本地 Python 3.11 / 3.12 并行复验同时验证截图测试状态目录隔离。
+
+补充的 Linux arm64 容器在关闭网络后，Python 3.11.18 / 3.12.16 均通过 830 项测试、严格类型检查、离线构建、发布版本与 SHA-256 校验。
+
 ## 设备与样本矩阵
 
 `tests/fixtures/compatibility/` 中的四份 JSON 全部为 **SYNTHETIC 手工合成说明性样本**，每份文件均带 `device_capture=false`。文件名中的版本与形态表示覆盖目标，真实系统字段和设备行为仍需采集验收。
