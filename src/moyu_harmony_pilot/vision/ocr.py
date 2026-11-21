@@ -6,6 +6,7 @@ import importlib.util
 import math
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from moyu_harmony_pilot.vision.models import (
     OcrEngine,
@@ -55,7 +56,8 @@ class RapidOcrEngine:
 
 class MacOSVisionOcrEngine:
     def __init__(self, *, languages: tuple[str, ...] = ("zh-Hans", "en-US")) -> None:
-        if sys.platform != "darwin":
+        # Type-check the optional adapter on every CI platform while retaining the runtime gate.
+        if sys.platform != "darwin" and not TYPE_CHECKING:
             raise VisionUnavailableError("The macOS Vision backend requires macOS.")
         try:
             import Foundation

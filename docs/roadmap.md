@@ -10,7 +10,7 @@
 
 本轮已实现应用查询与 HAP 下载部署、引用式输入与常用本地交互、UI 等待预算透传、账本查询/只读对账/人工成功结案/裁剪、Bridge 多设备子进程执行、自包含 HTML 检查页及报告，以及插件离线参数预检 `plugins validate`。使用方式见[应用管理、交互与运行诊断](app-management.md)和[Action 插件](actions.md)。
 
-本轮 P0 已补齐阶段指标与上下文交互、最低版本校验、公共测试工具、三段式独立插件、脱敏 Fixture 采集、本地 Mock Broker、OCR 与 MCP 内联图片、敏感屏/弹窗规则、回执保留、严格类型检查和 Tag 发布工作流。当前 6.1 / API 23 设备的只读诊断、布局、Fixture、OCR 和内联截图入口已通过复验。真实跨版本设备采集、受控副作用验收与 GitHub 四组合 CI 实跑仍待完成，状态见[兼容矩阵](compatibility.md)与[发布检查清单](release-checklist.md)。
+本轮 P0 已补齐阶段指标与上下文交互、最低版本校验、公共测试工具、三段式独立插件、脱敏 Fixture 采集、本地 Mock Broker、OCR 与 MCP 内联图片、敏感屏/弹窗规则、回执保留、严格类型检查和 Tag 发布工作流。当前 6.1 / API 23 设备的只读诊断、布局、Fixture、OCR 和内联截图入口已通过复验。当前设备经授权的亮灭屏幂等、防重与只读对账、Bridge 回执恢复及退出验证已完成。真实跨版本设备采集、其他副作用场景与 GitHub 四组合 CI 实跑继续验收，状态见[兼容矩阵](compatibility.md)与[发布检查清单](release-checklist.md)。
 
 ## 1. 迭代优先级总览
 
@@ -41,7 +41,7 @@
 - CI 已配置 macOS / Linux × Python 3.11 / 3.12 的编译、ruff、pytest、mypy 与分发构建检查。`v*` 标签工作流复用 CI，校验版本、构建 sdist/wheel、生成 SHA-256 校验和，复验上传附件后发布。
 - Pull Bridge 协议已冻结为 [v1.0](bridge-protocol.md)，继续使用协议头和路径中的 `v1`。
 - 兼容矩阵新增 5.x / 6.x 手机、平板、折叠屏四份合成遥测和布局样本，验证字段形状、多显示器布局、窗口焦点列和解析容错。所有新增样本均标记 `SYNTHETIC` 和 `device_capture=false`。
-- 当前 6.1 / API 23 单机只读复验已通过，受管临时文件已清理。尚待完成经人工审查的真实脱敏样本补充、其他设备形态及副作用验收与 GitHub 四组合运行。操作与记录格式见[兼容矩阵](compatibility.md)和[发布检查清单](release-checklist.md)。
+- 当前 6.1 / API 23 单机只读复验已通过，受管临时文件已清理。尚待完成经人工审查的真实脱敏样本补充、其他设备形态、应用部署/输入等副作用验收与 GitHub 四组合运行。操作与记录格式见[兼容矩阵](compatibility.md)和[发布检查清单](release-checklist.md)。
 
 ---
 

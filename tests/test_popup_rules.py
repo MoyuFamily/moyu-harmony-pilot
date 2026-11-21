@@ -50,6 +50,54 @@ def test_frozen_snapshot_and_element_satisfy_readonly_protocols() -> None:
     )
 
 
+def test_popup_bundle_inherits_only_its_own_window_ancestry() -> None:
+    def button(identifier: str, **attrs: Any) -> dict[str, Any]:
+        return {
+            "attributes": {
+                "type": "Button",
+                "id": identifier,
+                "text": "Close",
+                "bounds": "[10,10][200,60]",
+                "clickable": True,
+                **attrs,
+            }
+        }
+
+    tree = parse_layout_dict(
+        {
+            "attributes": {"type": "root", "bounds": "[0,0][400,800]"},
+            "children": [
+                {
+                    "attributes": {"bundleName": "com.example.window", "hostWindowId": "1"},
+                    "children": [
+                        button("inherited"),
+                        button("same", hostWindowId="1"),
+                        button("other", hostWindowId="2"),
+                        button("embedded", bundleName="com.example.embedded"),
+                    ],
+                },
+                button("unresolved"),
+            ],
+        }
+    )
+    snapshot = build_compact_snapshot(tree)
+    bundles = {element.id: element.bundle_name for element in snapshot.elements}
+    assert bundles == {
+        "inherited": "com.example.window",
+        "same": "com.example.window",
+        "other": "",
+        "embedded": "com.example.embedded",
+        "unresolved": "",
+    }
+    original = next(node for node in tree.iter_nodes() if node.id == "inherited")
+    assert original.bundle_name == ""
+    assert snapshot.layout_hash == tree.layout_hash
+    inherited_rule = PopupRule(bundle_name="com.example.window", node_id="inherited")
+    other_window_rule = PopupRule(bundle_name="com.example.window", node_id="other")
+    assert PopupWatcher([inherited_rule]).choose(snapshot) == "@e1"
+    assert PopupWatcher([other_window_rule]).choose(snapshot) is None
+
+
 @dataclass(frozen=True)
 class _LegacyElement:
     ref: str = "@e1"

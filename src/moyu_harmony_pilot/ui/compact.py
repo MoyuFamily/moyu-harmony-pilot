@@ -279,12 +279,20 @@ def build_compact_snapshot(
     screen_w, screen_h = tree.screen_size
     folded_paths: set[str] = set()
     raw_candidates: list[tuple[int, bool, UiNode, str]] = []
+    effective_bundles: dict[str, str] = {}
     order_counter = 0
 
-    def _visit(node: UiNode) -> None:
+    def _visit(node: UiNode, parent_bundle: str = "", parent_window: str = "") -> None:
         nonlocal order_counter
         if not node.visible:
             return
+        # Some official dumps put the bundle only on the window ancestor.
+        # An explicitly different window without its own bundle remains unresolved.
+        bundle = node.bundle_name or (
+            parent_bundle if not node.window_id or node.window_id == parent_window else ""
+        )
+        window = node.window_id or parent_window
+        effective_bundles[node.path] = bundle
 
         valid_in_view = node.bounds.is_valid and node.bounds.intersects_viewport(
             screen_w, screen_h
@@ -322,7 +330,7 @@ def build_compact_snapshot(
             order_counter += 1
 
         for child in node.children:
-            _visit(child)
+            _visit(child, bundle, window)
 
     _visit(tree.root)
 
@@ -363,7 +371,7 @@ def build_compact_snapshot(
                 selected=node.selected,
                 focused=node.focused,
                 path=node.path,
-                bundle_name=node.bundle_name,
+                bundle_name=effective_bundles[node.path],
             )
         )
 

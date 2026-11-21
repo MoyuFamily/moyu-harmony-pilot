@@ -201,6 +201,82 @@ def test_structural_keys_never_bypass_redaction(key: str, value: Any) -> None:
     parse_layout_dict(sanitized)
 
 
+@pytest.mark.parametrize("key", ["text", "description", "hint", "accessibilityText", "content"])
+@pytest.mark.parametrize("value", ["", " ", "   ", " \t\r\n", "\u00a0\u2003\u3000"])
+def test_blank_text_redaction_preserves_compact_pruning(key: str, value: str) -> None:
+    original = {"attributes": {"type": "Text", "bounds": "[0,0][100,100]", key: value}}
+    sanitized_json, summary = redact_layout_json(json.dumps(original))
+    sanitized = json.loads(sanitized_json)
+    assert sanitized["attributes"][key] == (" " if value else "")
+    assert summary.redacted_texts == int(bool(value))
+    before, after = parse_layout_dict(original), parse_layout_json(sanitized_json)
+    assert before.root.has_semantic_text is after.root.has_semantic_text is False
+    assert before.root.display_label == after.root.display_label == ""
+    assert build_compact_snapshot(before).elements == build_compact_snapshot(after).elements == ()
+
+
+@pytest.mark.parametrize("key", ["text", "description", "hint", "accessibilityText", "content"])
+@pytest.mark.parametrize("value", ["", " \t\r\n", "\u00a0\u2003\u3000"])
+def test_blank_text_redaction_preserves_compact_folding(key: str, value: str) -> None:
+    original = {
+        "attributes": {
+            "type": "Button",
+            "bounds": "[0,0][100,100]",
+            "clickable": True,
+            key: value,
+        },
+        "children": [
+            {
+                "attributes": {
+                    "type": "Text",
+                    "bounds": "[10,10][90,90]",
+                    "text": "Synthetic child label",
+                }
+            },
+        ],
+    }
+    sanitized, summary = redact_layout_dict(original)
+    before_tree, after_tree = parse_layout_dict(original), parse_layout_dict(sanitized)
+    before, after = build_compact_snapshot(before_tree), build_compact_snapshot(after_tree)
+    assert summary.redacted_texts == 1 + int(bool(value))
+    assert before_tree.root.has_semantic_text is after_tree.root.has_semantic_text is False
+    assert before.kept_elements == after.kept_elements == 1
+    assert before.elements[0].ref == after.elements[0].ref == "@e1"
+    assert before.elements[0].path == after.elements[0].path == "0"
+    assert before.elements[0].interactive is after.elements[0].interactive is True
+    assert before.elements[0].text == before_tree.root.children[0].text
+    assert after.elements[0].text == after_tree.root.children[0].text == "Text 1"
+    assert after.elements[0].description == after.elements[0].hint == ""
+
+
+@pytest.mark.parametrize("leading_key", ["description", "accessibilityText"])
+@pytest.mark.parametrize("value", ["", " \t\r\n", "\u00a0\u2003\u3000"])
+def test_blank_description_redaction_preserves_parser_alias_precedence(
+    leading_key: str,
+    value: str,
+) -> None:
+    original = {
+        "attributes": {
+            "type": "Text",
+            "bounds": "[0,0][100,100]",
+            leading_key: value,
+            "content": "Synthetic fallback",
+        },
+    }
+    if leading_key == "description":
+        original["attributes"]["accessibilityText"] = "Synthetic fallback"
+    sanitized, _ = redact_layout_dict(original)
+    before_tree, after_tree = parse_layout_dict(original), parse_layout_dict(sanitized)
+    assert bool(before_tree.root.description) is bool(after_tree.root.description) is True
+    assert before_tree.root.has_semantic_text is after_tree.root.has_semantic_text is (not value)
+    assert after_tree.root.description == (" " if value else "Text 1")
+    before, after = build_compact_snapshot(before_tree), build_compact_snapshot(after_tree)
+    assert before.kept_elements == after.kept_elements == int(not value)
+    assert [element.path for element in before.elements] == [
+        element.path for element in after.elements
+    ]
+
+
 def test_keep_lists_are_exact_validated_and_cannot_preserve_ids_or_custom_types() -> None:
     original = _private_layout()
     attrs = original["children"][0]["attributes"]

@@ -205,9 +205,13 @@ def redact_layout_dict(
                     )
                     stats["bundles"] += bool(value and value not in allowed_bundles)
                 elif key in _TEXT_KEYS:
-                    cleaned[key] = (
-                        value if value in allowed_texts else _pseudonym("text", value, "Text ")
-                    )
+                    if value.isspace():
+                        # Preserve nonempty alias precedence and stripped-empty UI semantics.
+                        cleaned[key] = " "
+                    else:
+                        cleaned[key] = (
+                            value if value in allowed_texts else _pseudonym("text", value, "Text ")
+                        )
                     stats["texts"] += bool(value and value not in allowed_texts)
                 else:
                     kind, prefix = _IDENTIFIER_KINDS[key]
