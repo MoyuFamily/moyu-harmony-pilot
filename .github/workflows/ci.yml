@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
@@ -12,6 +13,7 @@ permissions:
 jobs:
   offline-tests:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -19,12 +21,16 @@ jobs:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install package with dev extras
         run: |
@@ -37,10 +43,24 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src tests examples/plugin-template
 
-      - name: Run offline unit test suite
-        run: pytest -v
+      - name: Run offline unit and distribution tests
+        env:
+          PIP_NO_INDEX: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: python -m pytest -v
+
+      - name: Build sdist and wheel and validate metadata
+        env:
+          PIP_NO_INDEX: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          python -m build --no-isolation
+          python -m twine check --strict dist/*
 
       - name: Verify CLI schema works completely offline
         run: |
           harmony-pilot --version
           harmony-pilot schema --json > /dev/null
+
+      - name: Type-check all source modules
+        run: python -m mypy --python-version ${{ matrix.python-version }} src

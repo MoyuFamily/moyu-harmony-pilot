@@ -1,2 +1,3 @@
-# Reviewed Pilot release tag with action API v1 declarations.
-moyu-harmony-pilot @ git+https://github.com/MoyuFamily/moyu-harmony-pilot.git@v0.1.0
+# Development SDK baseline for the public testing/context APIs.
+# Install a matching local wheel/source first when this prerelease is unavailable on an index.
+moyu-harmony-pilot==0.2.0.dev0

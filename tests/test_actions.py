@@ -41,6 +41,39 @@ from moyu_harmony_pilot.hdc import HdcClient
 from tests.fakes import BATTERY_61_OVERHEATED, FakeDeviceState, FakeHdcTransport
 
 
+def test_validation_reports_declared_paths_without_echoing_input():
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["items"],
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["retry.limit"],
+                    "properties": {"retry.limit": {"type": "integer", "minimum": 1}},
+                },
+            },
+        },
+    }
+    check_schema(schema)
+    cases = [
+        ({}, '$["items"]'),
+        ({"items": [{}]}, '$["items"][0]["retry.limit"]'),
+        ({"items": [{"retry.limit": "private-value"}]}, '$["items"][0]["retry.limit"]'),
+        ({"items": [{"retry.limit": 0}]}, '$["items"][0]["retry.limit"]'),
+        ({"items": [{"retry.limit": 1, "private-key": "private-value"}]}, '$["items"][0]'),
+    ]
+    for value, expected_path in cases:
+        with pytest.raises(DeviceConfigurationError) as error:
+            validate_value(value, schema)
+        assert expected_path in str(error.value)
+        assert "private-key" not in str(error.value)
+        assert "private-value" not in str(error.value)
+
+
 @pytest.fixture(autouse=True)
 def isolated_plugin_environment(monkeypatch):
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [])

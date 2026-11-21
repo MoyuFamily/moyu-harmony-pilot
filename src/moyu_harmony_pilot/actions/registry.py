@@ -11,9 +11,12 @@ import os
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
+from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions.models import (
     ACTION_API_VERSION,
+    CONTEXT_API_MIN_VERSION,
     ActionPlugin,
     ActionSpec,
     IdempotentAction,
@@ -25,11 +28,33 @@ from moyu_harmony_pilot.actions.validation import (
     json_copy,
     validate_value,
 )
+from moyu_harmony_pilot.actions.versioning import is_version_compatible, parse_pilot_version
 from moyu_harmony_pilot.device import DeviceConfigurationError
 
 
+def _check_metrics_schema(schema: dict[str, Any]) -> None:
+    check_schema(schema)
+    if schema["type"] != "object":
+        raise DeviceConfigurationError("Parameters and metrics must be JSON objects.")
+    metric_properties = schema.get("properties", {})
+    if len(metric_properties) > 32:
+        raise DeviceConfigurationError("Metrics may declare up to 32 fields.")
+    for name, prop_schema in metric_properties.items():
+        kinds = prop_schema["type"]
+        kinds = kinds if isinstance(kinds, list) else [kinds]
+        if len(name) > 64 or {"object", "array"} & set(kinds):
+            raise DeviceConfigurationError(
+                "Metric fields require bounded names and scalar types."
+            )
+
+
 class ActionRegistry:
-    def __init__(self, *, allowed_actions: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        allowed_actions: Iterable[str] = (),
+        pilot_version: str | None = None,
+    ) -> None:
         if isinstance(allowed_actions, str):
             raise DeviceConfigurationError("allowed_actions must be a collection of action IDs.")
         self.allowed_actions = frozenset(allowed_actions)
@@ -38,6 +63,9 @@ class ActionRegistry:
             for name in self.allowed_actions
         ):
             raise DeviceConfigurationError("Invalid allowed action ID.")
+        resolved_version = __version__ if pilot_version is None else pilot_version
+        parse_pilot_version(resolved_version)
+        self.pilot_version = resolved_version
         self._plugins: dict[str, ActionPlugin] = {}
         self._specs: dict[str, ActionSpec] = {}
 
@@ -51,6 +79,13 @@ class ActionRegistry:
             raise DeviceConfigurationError(
                 f"Unsupported action API version. This Pilot supports API {ACTION_API_VERSION}."
             )
+        if spec.min_pilot_version is not None:
+            parse_pilot_version(spec.min_pilot_version)
+            if not is_version_compatible(self.pilot_version, spec.min_pilot_version):
+                raise DeviceConfigurationError(
+                    f"Action requires Pilot >= {spec.min_pilot_version} "
+                    f"(running {self.pilot_version})."
+                )
         if (
             not isinstance(spec.action_id, str)
             or not IDENTIFIER.fullmatch(spec.action_id)
@@ -70,20 +105,23 @@ class ActionRegistry:
             raise DeviceConfigurationError("Mutating actions must implement IdempotentAction.")
         if spec.side_effect == "mutating" and spec.diagnostic:
             raise DeviceConfigurationError("Mutating actions must use thermal protection.")
-        for schema in (spec.params_schema, spec.metrics_schema):
-            check_schema(schema)
-            if schema["type"] != "object":
-                raise DeviceConfigurationError("Parameters and metrics must be JSON objects.")
-        metric_properties = spec.metrics_schema.get("properties", {})
-        if len(metric_properties) > 32:
-            raise DeviceConfigurationError("Metrics may declare up to 32 fields.")
-        for name, schema in metric_properties.items():
-            kinds = schema["type"]
-            kinds = kinds if isinstance(kinds, list) else [kinds]
-            if len(name) > 64 or {"object", "array"} & set(kinds):
+        check_schema(spec.params_schema)
+        if spec.params_schema["type"] != "object":
+            raise DeviceConfigurationError("Parameters and metrics must be JSON objects.")
+        _check_metrics_schema(spec.metrics_schema)
+        if spec.inspection_metrics_schema is not None:
+            if spec.min_pilot_version is None or not is_version_compatible(
+                spec.min_pilot_version, CONTEXT_API_MIN_VERSION
+            ):
                 raise DeviceConfigurationError(
-                    "Metric fields require bounded names and scalar types."
+                    "inspection_metrics_schema requires "
+                    f"min_pilot_version >= {CONTEXT_API_MIN_VERSION}."
                 )
+            if spec.side_effect != "mutating":
+                raise DeviceConfigurationError(
+                    "inspection_metrics_schema is only supported on mutating actions."
+                )
+            _check_metrics_schema(spec.inspection_metrics_schema)
         for example in spec.examples:
             validate_value(json_copy(example), spec.params_schema)
         if spec.action_id in self._plugins:
@@ -101,14 +139,14 @@ class ActionRegistry:
             raise DeviceConfigurationError("This action is restricted to local execution.")
         return self._plugins[action_id], ActionSpec(**spec.to_dict())
 
-    def describe(self, action_id: str) -> dict:
+    def describe(self, action_id: str) -> dict[str, Any]:
         _, spec = self.get(action_id)
         return {
             **spec.to_dict(),
             "remote_allowed": (action_id in self.allowed_actions and not spec.local_only),
         }
 
-    def list(self) -> list[dict]:
+    def list(self) -> list[dict[str, Any]]:
         return [self.describe(action_id) for action_id in sorted(self._plugins)]
 
     @classmethod
@@ -119,10 +157,11 @@ class ActionRegistry:
         allowed_actions: Iterable[str] = (),
         remote: bool = False,
         plugin_paths: Iterable[str | Path] | None = None,
+        pilot_version: str | None = None,
     ) -> ActionRegistry:
         from moyu_harmony_pilot.actions.builtin import builtin_plugins
 
-        registry = cls(allowed_actions=allowed_actions)
+        registry = cls(allowed_actions=allowed_actions, pilot_version=pilot_version)
         for plugin in builtin_plugins():
             registry.register(plugin)
         environment = os.environ if env is None else env

@@ -19,12 +19,15 @@ harmony-pilot screenshot --device harmony-01 --out .state/screen.png --som --max
 
 Snapshots contain deterministic `@eN` references, `layout_hash` and `sensitive_signals`. `--som` requires the optional vision extra and returns the matching snapshot. For `layout_changed`, capture again before using the marks.
 
+Use `ocr --backend auto --max-width 1280 --json` for bounded local text recognition with an installed OCR extra. Bounds use resized-image pixels, with original dimensions and x/y scale in the result. MCP registers read-only OCR after `--enable-ocr` startup. `screenshot(inline=true)` requires `--inline-images` and stays within `--max-image-bytes` (2 MiB default). Sensitive image or OCR observations require human takeover.
+
 ## Execute actions
 
-Inspect `plugins list` and `plugins describe ACTION_ID` before constructing parameters. Select trusted plugins whose schemas match the task. Use `run --dry-run` to validate parameters and online device selection when that resolves uncertainty.
+Inspect `plugins list` and `plugins describe ACTION_ID` before constructing parameters. Select trusted plugins whose schemas match the task. Use `plugins validate ACTION_ID --params-json '...' --json` to check parameters offline; mutating actions also require `--idempotency-key`. This imports trusted plugin code but does not check a device, remote allowlists, or execute an action. Use `run --dry-run` when online device selection also needs validation.
 
 ```bash
 harmony-pilot plugins describe device.health --json
+harmony-pilot plugins validate device.health --params-json '{}' --json
 harmony-pilot run --device harmony-01 --action device.health --params-json '{}' --json
 ```
 
@@ -40,7 +43,7 @@ If `sensitive_signals` or `human_required` indicates a password, verification ch
 
 CLI interaction uses `interact SUBCOMMAND --local-lab` with a fresh budget per invocation. Scroll search observes internally before each swipe.
 
-For authorized HAP deployment, use `apps install` with a stable idempotency key. An `unknown` result can be checked with `ledger reconcile` using the original action parameters. Record verified human completion with `ledger resolve --note`. `apps list` and `apps info` provide read-only bundle discovery.
+For authorized package deployment, use `apps install --package <path>` with a stable idempotency key. HAP, application-internal HSP, and HarmonyOS APP archives are accepted; the existing `--hap` flag also works. A single APP is submitted intact on API 22+ devices. Earlier APIs and combined package inputs use privately expanded HAP/HSP modules. Action parameters retain the original archive path and digest. AppGallery upload signing can cover the outer APP while the device installer requires signed inner modules. URL installation recognizes `.app` and `.hsp` URL paths; for opaque download URLs, first use `apps download --out <path.app>` to select the format. An `unknown` result can be checked with `ledger reconcile` using the original action parameters. Record verified human completion with `ledger resolve --note`. `apps list` and `apps info` provide read-only bundle discovery.
 
 Use `inspect --out PRIVATE.html` for a local visual inspection artifact and `ledger report` or `report --input RESULT.json` for execution reports. Keep these artifacts private.
 
@@ -54,4 +57,10 @@ Use `inspect --out PRIVATE.html` for a local visual inspection artifact and `led
 - Exit `5` requires cooling the device before further work.
 - Exit `6` indicates a busy device. Wait for its current operation to finish.
 
-For plugin development, use the public `actions`, `device`, `ui` and optional `vision` APIs. Keep application-specific business logic in an external plugin. The installed schema and plugin descriptions define accepted inputs.
+For plugin development, start with `examples/plugin-template` in a Pilot source checkout. Keep application-specific logic in an external plugin and use the public `actions`, `device`, `ui` and optional `vision` APIs. Install the plugin into the Pilot environment, inspect it with `plugins describe`, validate sample parameters with `plugins validate`, and run the template's `python -m tests` offline contracts. For Bridge deployment, add an explicit per-device allowlist entry and inspect `serve --config PRIVATE_CONFIG --check --json` before execution. The installed CLI schema and plugin descriptions define accepted inputs.
+
+Plugins using new context APIs declare `min_pilot_version="0.2.0.dev0"` and a matching package dependency. Use `ctx.interact()` inside Runner stages to reuse the lock and budget. Only `submit` may mutate after the durable reservation. `inspection_metrics_schema` describes inspect-stage baselines, while final success must satisfy `metrics_schema.required`. Preserve `human_required` and `failed` inspection outcomes even when success metrics are absent.
+
+Reuse `moyu_harmony_pilot.testing` for synthetic device transports and contract assertions. `fixture capture --out PRIVATE.json --json` produces a redacted candidate with `manual_review_required=true`. Review before committing. `testing.broker.MockBroker` validates the four Bridge endpoints entirely in memory and can be injected into `HttpBridgeClient` as its opener.
+
+For receipt retention, `receipts prune --database PRIVATE.sqlite3 --bridge-id WORKER --older-than-days N` archives acknowledged success payloads and retains job tombstones. Archived job IDs fail closed on delivery. Pending and uncertain receipts remain available. Keep the Broker's acknowledged result for later reconciliation.

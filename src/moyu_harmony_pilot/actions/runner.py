@@ -112,7 +112,8 @@ class ActionRunner:
             return ActionOutcome(summary="Action parameters and device selection validated.")
         ensure_deadline_available()
         ctx = ActionContext(
-            device, time.monotonic() + seconds, max_steps, cancelled=cancelled, on_stage=on_stage
+            device, time.monotonic() + seconds, max_steps, cancelled=cancelled, on_stage=on_stage,
+            _plugin_min_version=spec.min_pilot_version,
         )
         with device.acquire_lock():
             try:
@@ -136,14 +137,17 @@ class ActionRunner:
                             timeout=ctx.remaining_timeout,
                         ),
                     )
+                ctx.stage = "readonly"
                 outcome = _bounded_call(
                     ctx, lambda: plugin.execute(ctx, json_copy(params)), stage="inspect"
                 )
-                return outcome.validate(spec)
+                return outcome.validate(spec, stage="final")
             except (DeviceBusyError, UiConcurrentCallError):
                 raise
             except (Exception, ActionBudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
                 return _failure(exc)
+            finally:
+                ctx.stage = None
 
     def _mutating(
         self,
@@ -155,6 +159,7 @@ class ActionRunner:
         key: LedgerKey,
     ) -> ActionOutcome:
         _bounded_call(ctx, lambda: ctx.device.assert_thermal_safe(timeout=ctx.remaining_timeout))
+        ctx.stage = "inspect"
         inspection = _bounded_call(
             ctx, lambda: plugin.inspect(ctx, json_copy(params)), stage="inspect"
         )
@@ -165,11 +170,17 @@ class ActionRunner:
             "failed",
         }:
             raise DeviceConfigurationError("Invalid plugin inspection result.")
+        summary = (
+            "Read-only inspection completed."
+            if inspection.summary is None
+            else inspection.summary
+        )
         observed = ActionOutcome(
             status="succeeded" if inspection.status == "ready" else inspection.status,
-            summary="Read-only inspection completed.",
+            summary=summary,
             metrics=inspection.metrics,
-        ).validate(spec)
+            error_code=inspection.error_code,
+        ).validate(spec, stage="inspect")
         if inspection.status in {"human_required", "failed"}:
             return observed
         if inspection.status == "ready":
@@ -187,7 +198,7 @@ class ActionRunner:
             )
         _ = ctx.remaining_timeout
         try:
-            ctx.inspection_metrics = dict(inspection.metrics)
+            ctx.inspection_metrics = dict(observed.metrics)
             ledger.reserve(key, inspection_metrics=ctx.inspection_metrics)
         except (Exception, KeyboardInterrupt, SystemExit):
             # An interruption can land immediately after SQLite commits its reservation.
@@ -206,13 +217,15 @@ class ActionRunner:
             if inspection.status == "already_done":
                 outcome = observed
             else:
+                ctx.stage = "submit"
                 _bounded_call(
                     ctx, lambda: plugin.submit(ctx, inspection, json_copy(params)), stage="submit"
                 )
+                ctx.stage = "confirm"
                 confirmed = _bounded_call(
                     ctx, lambda: plugin.confirm(ctx, json_copy(params)), stage="confirm"
                 )
-                confirmed = confirmed.validate(spec)
+                confirmed = confirmed.validate(spec, stage="final")
                 if confirmed.status in {"succeeded", "already_done"}:
                     outcome = confirmed
         except (Exception, ActionBudgetExceeded, KeyboardInterrupt, SystemExit) as exc:
@@ -227,7 +240,8 @@ class ActionRunner:
         return outcome
 
     def reconcile(
-        self, device: HarmonyDevice, action_id: str, params: dict, *, idempotency_key: str,
+        self, device: HarmonyDevice, action_id: str, params: dict[str, Any], *,
+        idempotency_key: str,
         timeout: float | None = None, note: str | None = None,
     ) -> ActionOutcome:
         """Confirm a prior submission read-only, or explicitly record a human verification."""
@@ -256,13 +270,17 @@ class ActionRunner:
                 ctx = ActionContext(
                     device, time.monotonic() + seconds,
                     inspection_metrics=record["inspection_metrics"], reconciling=True,
+                    stage="confirm",
+                    _plugin_min_version=spec.min_pilot_version,
                 )
                 try:
                     outcome = _bounded_call(
                         ctx, lambda: plugin.confirm(ctx, json_copy(params)), stage="confirm"
-                    ).validate(spec)
+                    ).validate(spec, stage="final")
                 except (Exception, ActionBudgetExceeded, KeyboardInterrupt, SystemExit):
                     return previous
+                finally:
+                    ctx.stage = None
                 if outcome.status not in {"succeeded", "already_done"}:
                     return previous
             ledger.resolve(key, outcome, note=note or "Read-only plugin confirmation.")

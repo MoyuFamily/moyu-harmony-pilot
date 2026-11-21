@@ -14,6 +14,7 @@ from moyu_harmony_pilot.actions.models import (
 )
 from moyu_harmony_pilot.actions.registry import ActionRegistry
 from moyu_harmony_pilot.actions.runner import ActionRunner
+from moyu_harmony_pilot.actions.versioning import is_version_compatible, parse_pilot_version
 
 __all__ = [
     "ACTION_API_VERSION",
@@ -28,4 +29,6 @@ __all__ = [
     "IdempotentAction",
     "Inspection",
     "InteractionSession",
+    "is_version_compatible",
+    "parse_pilot_version",
 ]

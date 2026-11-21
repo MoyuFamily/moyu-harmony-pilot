@@ -1,0 +1,111 @@
+{
+  "provenance": {
+    "kind": "SYNTHETIC",
+    "device_capture": false,
+    "target_family": "HarmonyOS NEXT 5.x",
+    "form_factor": "phone",
+    "description": "手工构造的说明性解析回归数据。版本和设备形态是覆盖目标，真机验收状态为待验证。",
+    "schema_basis": [
+      "ui/parser.py",
+      "device/telemetry.py"
+    ]
+  },
+  "battery": {
+    "dump": "SYNTHETIC illustrative BatteryService sample\nCapacity: 48\ncharging_status: DISABLE\nplugged_type: 0\ntemperature: 29.5C\nvoltage: 3890\nhealth_state: 1\npresent: 1\n",
+    "expected": {
+      "battery_percent": 48,
+      "charging": false,
+      "charging_status": null,
+      "plugged_type": 0,
+      "temperature_c": 29.5,
+      "voltage_mv": 3890,
+      "health_state": 1,
+      "present": true
+    }
+  },
+  "power": {
+    "dump": "SYNTHETIC illustrative PowerManagerService sample\nPower State: SLEEP\nScreenOffTime: Timeout=15000ms\n",
+    "expected": {
+      "screen_state": "off",
+      "raw_state": "SLEEP",
+      "screen_off_timeout_ms": 15000
+    }
+  },
+  "window": {
+    "dump": "SYNTHETIC illustrative WindowManagerService sample\nFocus window: 11\nbundleName=com.example.synthetic.phone5\nabilityName: EntryAbility\n",
+    "expected": {
+      "bundle_name": "com.example.synthetic.phone5",
+      "window_name": null,
+      "window_id": 11,
+      "ability_name": "EntryAbility"
+    }
+  },
+  "layouts": [
+    {
+      "display_id": 0,
+      "dump": {
+        "attributes": {
+          "type": "Root",
+          "bounds": "[0,0][1080,1920]",
+          "bundleName": "com.example.synthetic.phone5",
+          "windowId": "11",
+          "visible": "true"
+        },
+        "children": [
+          {
+            "attributes": {
+              "type": "Text",
+              "id": "title_5",
+              "text": "SYNTHETIC 5.x 示例",
+              "bounds": "[40,60][1040,160]"
+            },
+            "children": []
+          },
+          {
+            "attributes": {
+              "type": "Button",
+              "key": "primary_5",
+              "text": "示例操作",
+              "accessibilityText": "合成按钮说明",
+              "bounds": "[80,400][1000,520]",
+              "clickable": "true",
+              "enabled": "true"
+            },
+            "children": []
+          },
+          {
+            "attributes": {
+              "type": "Column",
+              "visible": "false",
+              "bounds": "[0,600][1080,900]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "type": "Button",
+                  "id": "hidden_5",
+                  "text": "隐藏示例",
+                  "bounds": "[80,620][1000,740]",
+                  "clickable": "true"
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "screen_size": [
+          1080,
+          1920
+        ],
+        "node_count": 5,
+        "compact_ids": [
+          "title_5",
+          "primary_5"
+        ],
+        "root_window_id": "11"
+      }
+    }
+  ]
+}

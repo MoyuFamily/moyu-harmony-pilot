@@ -54,8 +54,8 @@ def annotate_som(
             left, top, right, bottom = mark.bounds
             if right <= left or bottom <= top:
                 raise VisionError("Invalid SoM rectangle.")
-            x1 = max(0, min(image.width - 1, round(left * scale_x)))
-            y1 = max(0, min(image.height - 1, round(top * scale_y)))
+            x1: float = max(0, min(image.width - 1, round(left * scale_x)))
+            y1: float = max(0, min(image.height - 1, round(top * scale_y)))
             x2 = max(x1, min(image.width - 1, round(right * scale_x)))
             y2 = max(y1, min(image.height - 1, round(bottom * scale_y)))
             drawing.rectangle((x1, y1, x2, y2), outline="#e63946", width=2)

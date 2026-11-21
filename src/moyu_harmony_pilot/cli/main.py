@@ -121,7 +121,7 @@ def _add_shared_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level `harmony-pilot` CLI argument parser."""
-    shared = argparse.ArgumentParser(add_help=False)
+    shared = _PilotArgumentParser(add_help=False)
     _add_shared_options(shared, suppress_defaults=True)
 
     parser = _PilotArgumentParser(
@@ -323,6 +323,13 @@ def build_parser() -> argparse.ArgumentParser:
         "describe", parents=[shared], help="Describe an action schema and safety metadata.",
     )
     p_describe.add_argument("action_id")
+    p_validate = plugin_commands.add_parser(
+        "validate", parents=[shared],
+        help="Validate action parameters offline without connecting to a device.",
+    )
+    p_validate.add_argument("action_id")
+    p_validate.add_argument("--params-json", default="{}", metavar="JSON")
+    p_validate.add_argument("--idempotency-key", default=None, metavar="KEY")
 
     p_run = subparsers.add_parser(
         "run", parents=[shared], help="Execute a local action under device and ledger guards.",
@@ -785,9 +792,23 @@ def _cmd_schema() -> tuple[ExitCode, dict[str, Any], str]:
 def _cmd_plugins(
     args: argparse.Namespace, *, env: Mapping[str, str] | None,
 ) -> tuple[ExitCode, dict[str, Any], str]:
+    params = _parse_action_params(args.params_json) if args.plugin_command == "validate" else {}
     registry = ActionRegistry.discover(env=env)
     if args.plugin_command == "describe":
         data = registry.describe(args.action_id)
+    elif args.plugin_command == "validate":
+        _, spec, _, _ = ActionRunner(registry, state_dir=args.state_dir).prepare(
+            args.action_id, params, idempotency_key=args.idempotency_key,
+        )
+        data = {
+            "valid": True,
+            "action_id": spec.action_id,
+            "api_version": spec.api_version,
+            "version": spec.version,
+            "side_effect": spec.side_effect,
+            "device_checked": False,
+            "executed": False,
+        }
     else:
         data = {"plugins": registry.list()}
     return ExitCode.OK, data, json.dumps(data, ensure_ascii=False, indent=2)
@@ -802,18 +823,25 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _cmd_run(
-    args: argparse.Namespace, *, transport: HdcTransport | None, cwd: Path | None,
-    env: Mapping[str, str] | None,
-) -> tuple[ExitCode, dict[str, Any], str]:
+def _parse_action_params(raw: str) -> dict[str, Any]:
     try:
-        if len(args.params_json.encode("utf-8")) > MAX_JSON_BYTES:
+        if len(raw.encode("utf-8")) > MAX_JSON_BYTES:
             raise ValueError("JSON size limit.")
-        params = json.loads(args.params_json, object_pairs_hook=_unique_json_object)
+        parsed = json.loads(raw, object_pairs_hook=_unique_json_object)
+        if not isinstance(parsed, dict):
+            raise ValueError("Object required.")
+        return parsed
     except (ValueError, RecursionError) as exc:
         raise DeviceConfigurationError(
             "--params-json requires a bounded valid JSON object."
         ) from exc
+
+
+def _cmd_run(
+    args: argparse.Namespace, *, transport: HdcTransport | None, cwd: Path | None,
+    env: Mapping[str, str] | None,
+) -> tuple[ExitCode, dict[str, Any], str]:
+    params = _parse_action_params(args.params_json)
     registry = ActionRegistry.discover(env=env)
     runner = ActionRunner(registry, state_dir=args.state_dir)
     runner.prepare(
@@ -844,7 +872,10 @@ def _emit_envelope(envelope: CliEnvelope, out: TextIO) -> None:
     out.write(envelope.to_json() + "\n")
 
 
-def _cmd_serve(args, *, transport, env) -> tuple[ExitCode, dict, str]:
+def _cmd_serve(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    env: Mapping[str, str] | None,
+) -> tuple[ExitCode, dict[str, Any], str]:
     if args.config is None:
         raise DeviceConfigurationError("serve requires --config pointing to a private JSON file.")
     config = BridgeConfig.load(args.config, env=env)
@@ -896,12 +927,12 @@ def main(
         with redirect_stdout(parser_output):
             args = parser.parse_args(raw_argv)
     except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 0
-        if json_requested and code == 0:
+        parser_code = exc.code if isinstance(exc.code, int) else 0
+        if isinstance(parser_output, io.StringIO) and parser_code == 0:
             _emit_envelope(
                 ok_envelope(guessed_cmd, {"text": parser_output.getvalue().strip()}), out,
             )
-        return code
+        return parser_code
     except _CliArgumentError as exc:
         if json_requested:
             _emit_envelope(
@@ -938,6 +969,7 @@ def main(
             parser.print_help(file=out)
         return int(ExitCode.OK)
 
+    exit_code: int
     try:
         if command == "devices":
             exit_code, data, human = _cmd_devices(args, transport=transport, cwd=cwd, env=env)
@@ -984,7 +1016,7 @@ def main(
                                 "Reconcile the previous submission read-only before further action."
                             ),
                             "device_overheated": "Allow the device to cool before retrying.",
-                        }.get(data.get("status")),
+                        }.get(data.get("status", "")),
                         data=data,
                     ),
                     out,

@@ -107,7 +107,7 @@ def classify_exception(
     return (
         ExitCode.FAILED,
         "internal_error",
-        f"Unexpected {type(exc).__name__}: {exc}",
+        "Unexpected internal error.",
         False,
-        "Run with diagnostics or inspect stderr for details.",
+        "Report a sanitized reproduction to the maintainer.",
     )

@@ -128,7 +128,8 @@ class BridgeConfig:
 
 
 def validate_configuration(
-    config: BridgeConfig, *, registry: ActionRegistry | None = None, env=None
+    config: BridgeConfig, *, registry: ActionRegistry | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[DeviceRegistry, ActionRegistry]:
     if not check_config_permissions(config.devices_config):
         raise DeviceConfigurationError(

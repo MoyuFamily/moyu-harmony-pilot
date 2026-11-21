@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import sys
 from pathlib import Path
@@ -121,7 +122,20 @@ class MacOSVisionOcrEngine:
             raise VisionError("macOS Vision recognition failed.") from exc
 
 
+def detect_ocr_backend() -> str:
+    """Return the first installed local OCR backend (`macos` or `rapidocr`)."""
+    if sys.platform == "darwin" and importlib.util.find_spec("Vision") is not None:
+        return "macos"
+    if importlib.util.find_spec("rapidocr_onnxruntime") is not None:
+        return "rapidocr"
+    raise VisionUnavailableError(
+        "No local OCR backend is installed. Install vision-macos or vision-rapidocr."
+    )
+
+
 def create_ocr_engine(backend: str | None = None) -> OcrEngine:
+    if backend == "auto":
+        backend = detect_ocr_backend()
     if backend == "macos":
         return MacOSVisionOcrEngine()
     if backend == "rapidocr":

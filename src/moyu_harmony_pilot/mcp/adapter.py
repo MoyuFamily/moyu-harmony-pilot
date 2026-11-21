@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
+from typing import Any
 
 from moyu_harmony_pilot.actions import ActionRegistry, ActionRunner, InteractionSession
-from moyu_harmony_pilot.actions.observation import capture_screenshot
-from moyu_harmony_pilot.device import DeviceConfigurationError, DeviceRegistry, HarmonyDevice
+from moyu_harmony_pilot.actions.budget import bounded_call, ensure_deadline_available
+from moyu_harmony_pilot.actions.models import ActionBudgetExceeded, ActionContext
+from moyu_harmony_pilot.actions.observation import capture_ocr, capture_screenshot
+from moyu_harmony_pilot.device import (
+    DeviceConfigurationError,
+    DeviceError,
+    DeviceRegistry,
+    HarmonyDevice,
+)
 from moyu_harmony_pilot.hdc import ConnectionState, HdcClient
+
+DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
 
 
 class PilotTools:
@@ -23,8 +35,17 @@ class PilotTools:
         local_lab: bool = False,
         max_steps: int = 20,
         timeout: float = 60,
+        inline_images: bool = False,
+        max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+        enable_ocr: bool = False,
     ) -> None:
         InteractionSession.validate_budget(max_steps, timeout)
+        if type(inline_images) is not bool or type(enable_ocr) is not bool:
+            raise DeviceConfigurationError("Observation startup switches must be boolean.")
+        if type(max_image_bytes) is not int or not 1 <= max_image_bytes <= MAX_IMAGE_BYTES:
+            raise DeviceConfigurationError(
+                f"max_image_bytes must be an integer between 1 and {MAX_IMAGE_BYTES}."
+            )
         self.hdc = hdc
         self.devices = devices
         self.actions = actions
@@ -32,6 +53,9 @@ class PilotTools:
         self.local_lab = local_lab
         self.max_steps = max_steps
         self.timeout = timeout
+        self.inline_images = inline_images
+        self.max_image_bytes = max_image_bytes
+        self.enable_ocr = enable_ocr
         self.runner = ActionRunner(actions, state_dir=state_dir)
         self._sessions: dict[str, InteractionSession] = {}
         for action_id in actions.allowed_actions:
@@ -44,7 +68,7 @@ class PilotTools:
         self.devices.resolve(alias, self.hdc.list_targets(), require_online=True)
         return HarmonyDevice(self.hdc, profile, state_dir=self.state_dir)
 
-    def list_devices(self) -> dict:
+    def list_devices(self) -> dict[str, Any]:
         targets = {target.serial: target for target in self.hdc.list_targets()}
         rows = []
         for profile in self.devices.profiles:
@@ -56,42 +80,71 @@ class PilotTools:
             )
         return {"devices": rows}
 
-    def health(self, alias: str) -> dict:
+    def health(self, alias: str) -> dict[str, Any]:
         device = self._device(alias)
         with device.acquire_lock():
             return device.get_health().to_dict()
 
-    def dump_ui(self, alias: str) -> dict:
+    def dump_ui(self, alias: str) -> dict[str, Any]:
         device = self._device(alias)
         with device.acquire_lock():
             _, snapshot = device.dump_ui_compact()
         return {"alias": alias, "snapshot": snapshot.to_dict()}
 
-    def screenshot(self, alias: str, *, max_width: int = 1280, som: bool = False) -> dict:
+    def screenshot(
+        self, alias: str, *, max_width: int = 1280, som: bool = False, inline: bool = False,
+    ) -> dict[str, Any]:
         if type(max_width) is not int or not 1 <= max_width <= 8192:
             raise DeviceConfigurationError("max_width must be an integer between 1 and 8192.")
+        if type(inline) is not bool or type(som) is not bool:
+            raise DeviceConfigurationError("inline and som must be boolean.")
+        if inline and not self.inline_images:
+            raise DeviceConfigurationError(
+                "Inline screenshots require explicit --inline-images startup."
+            )
+        ensure_deadline_available()
         device = self._device(alias)
+        context = ActionContext(device, time.monotonic() + self.timeout)
         directory = device.diagnostics.ensure_ready()
         fd, filename = tempfile.mkstemp(prefix="mcp-screen-", suffix=".png", dir=directory)
         os.close(fd)
         try:
-            result, snapshot = capture_screenshot(
-                device,
-                filename,
-                image_format="png",
-                max_width=max_width,
-                som=som,
+            result, snapshot = bounded_call(
+                context,
+                lambda: capture_screenshot(
+                    device, filename, image_format="png", max_width=max_width, som=som,
+                    timeout=context.remaining_timeout, guard_sensitive=inline,
+                ),
             )
+            if inline and not 0 < result.size_bytes <= self.max_image_bytes:
+                raise DeviceError(
+                    "Screenshot exceeds the inline image byte limit. Reduce max_width.",
+                    code="image_too_large",
+                )
             device.diagnostics.prune()
             payload = result.to_dict()
             if snapshot is not None:
                 payload["snapshot"] = snapshot.to_dict()
             return payload
-        except BaseException:
+        except BaseException as exc:
             Path(filename).unlink(missing_ok=True)
+            if isinstance(exc, ActionBudgetExceeded):
+                raise DeviceError(
+                    "Screenshot deadline exhausted. Observe again with a sufficient timeout.",
+                    code="action_budget_exceeded",
+                ) from exc
             raise
 
-    def list_actions(self) -> dict:
+    def ocr(
+        self, alias: str, *, backend: str = "auto", max_width: int = 1280, timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        if not self.enable_ocr:
+            raise DeviceConfigurationError("Local OCR requires explicit --enable-ocr startup.")
+        return capture_ocr(
+            self._device(alias), backend=backend, max_width=max_width, timeout=timeout,
+        )
+
+    def list_actions(self) -> dict[str, Any]:
         return {
             "actions": [
                 self.actions.describe(action_id)
@@ -103,11 +156,11 @@ class PilotTools:
         self,
         alias: str,
         action_id: str,
-        params: dict,
+        params: dict[str, Any],
         *,
         idempotency_key: str | None = None,
         timeout: float | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         self.runner.prepare(
             action_id, params, remote=True, idempotency_key=idempotency_key, timeout=timeout
         )
@@ -130,35 +183,37 @@ class PilotTools:
             )
         return self._sessions[alias]
 
-    def lab_observe(self, alias: str) -> dict:
+    def lab_observe(self, alias: str) -> dict[str, Any]:
         return {"alias": alias, "snapshot": self._session(alias).observe().to_dict()}
 
-    def click_ref(self, alias: str, ref: str, layout_hash: str) -> dict:
+    def click_ref(self, alias: str, ref: str, layout_hash: str) -> dict[str, Any]:
         return self._session(alias).click_ref(ref, layout_hash=layout_hash)
 
-    def swipe(self, alias: str, direction: str, layout_hash: str) -> dict:
+    def swipe(self, alias: str, direction: str, layout_hash: str) -> dict[str, Any]:
         return self._session(alias).swipe(direction, layout_hash=layout_hash)
 
-    def back(self, alias: str, layout_hash: str) -> dict:
+    def back(self, alias: str, layout_hash: str) -> dict[str, Any]:
         return self._session(alias).back(layout_hash=layout_hash)
 
-    def home(self, alias: str, layout_hash: str) -> dict:
+    def home(self, alias: str, layout_hash: str) -> dict[str, Any]:
         return self._session(alias).home(layout_hash=layout_hash)
 
-    def long_click_ref(self, alias: str, ref: str, layout_hash: str) -> dict:
+    def long_click_ref(self, alias: str, ref: str, layout_hash: str) -> dict[str, Any]:
         return self._session(alias).long_click_ref(ref, layout_hash=layout_hash)
 
-    def input_text_ref(self, alias: str, ref: str, text: str, layout_hash: str) -> dict:
+    def input_text_ref(
+        self, alias: str, ref: str, text: str, layout_hash: str,
+    ) -> dict[str, Any]:
         return self._session(alias).input_text_ref(ref, text, layout_hash=layout_hash)
 
     def start_app(
         self, alias: str, bundle_name: str, layout_hash: str, ability_name: str | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         return self._session(alias).start_app(
             bundle_name, ability_name=ability_name, layout_hash=layout_hash
         )
 
-    def wait_for(self, alias: str, selector: dict) -> dict:
+    def wait_for(self, alias: str, selector: dict[str, Any]) -> dict[str, Any]:
         from moyu_harmony_pilot.ui.selector import selector_from_dict
 
         node = self._session(alias).wait_for(selector_from_dict(selector))
@@ -167,8 +222,8 @@ class PilotTools:
         }
 
     def scroll_until(
-        self, alias: str, selector: dict, direction: str = "up", max_swipes: int = 10
-    ) -> dict:
+        self, alias: str, selector: dict[str, Any], direction: str = "up", max_swipes: int = 10
+    ) -> dict[str, Any]:
         from moyu_harmony_pilot.ui.selector import selector_from_dict
 
         node = self._session(alias).scroll_until(
