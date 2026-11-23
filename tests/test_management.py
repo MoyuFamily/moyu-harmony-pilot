@@ -50,6 +50,52 @@ def test_v1_ledger_migration_resolution_and_retention(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_ledger_release_allows_retry_and_protects_confirmed_records(tmp_path):
+    path = tmp_path / "actions.sqlite3"
+    ledger = ActionLedger(path)
+    key = ActionLedger.make_key("SYNTHETIC_DEV", "example.action", "day-1", "1.0", {"x": 1})
+    other_params = ActionLedger.make_key(
+        "SYNTHETIC_DEV", "example.action", "day-1", "1.0", {"x": 2}
+    )
+
+    with pytest.raises(DeviceConfigurationError, match="No matching uncertain reservation"):
+        ledger.release(key, note="Nothing to release")
+
+    ledger.reserve(key)
+    with pytest.raises(DeviceConfigurationError, match="audit note"):
+        ledger.release(key, note="   ")
+    with pytest.raises(DeviceConfigurationError, match="different parameters"):
+        ledger.release(other_params, note="Wrong params")
+
+    # Release directly from submitting (e.g. crashed before finish).
+    ledger.release(key, note="Verified no side effect after crash")
+    assert ledger.lookup(key) is None
+
+    # Re-reserve, mark unknown, then release and confirm audit trail.
+    ledger.reserve(key)
+    ledger.finish(
+        key,
+        ActionOutcome(status="unknown", summary="Uncertain.", error_code="submission_uncertain"),
+    )
+    assert ledger.lookup(key).status == "unknown"
+    ledger.release(key, note="Verified blocked on boot wizard")
+    assert ledger.lookup(key) is None
+
+    # Confirmed records must never be released.
+    ledger.reserve(key)
+    ledger.finish(key, ActionOutcome(status="succeeded"))
+    with pytest.raises(DeviceConfigurationError, match="Only uncertain reservations"):
+        ledger.release(key, note="Attempted release on completed action")
+    assert ledger.lookup(key).status == "already_done"
+
+    with sqlite3.connect(path) as db:
+        rows = db.execute("SELECT status, note FROM resolutions ORDER BY rowid").fetchall()
+    assert rows == [
+        ("released", "Verified no side effect after crash"),
+        ("released", "Verified blocked on boot wizard"),
+    ]
+
+
 @pytest.fixture
 def local_device(tmp_path):
     image = io.BytesIO()

@@ -227,7 +227,7 @@ class ActionContext:
     def dismiss_popup(
         self, watcher: PopupWatcher, *, snapshot: CompactSnapshot | None = None
     ) -> dict[str, Any] | None:
-        """Dismiss one matching non-sensitive popup during the submit stage."""
+        """Dismiss one matching non-sensitive popup during the preparing or submit stage."""
         return self.interact().dismiss_popup(watcher, snapshot=snapshot)
 
 
@@ -248,6 +248,12 @@ class IdempotentAction(ActionPlugin):
     @abstractmethod
     def inspect(self, ctx: ActionContext, params: dict[str, Any]) -> Inspection:
         """Return ready, already_done, human_required, or failed without mutation."""
+
+    def prepare(
+        self, ctx: ActionContext, inspection: Inspection, params: dict[str, Any]
+    ) -> Inspection:
+        """Optional idempotent pre-submission setup executed before reservation."""
+        return inspection
 
     @abstractmethod
     def submit(self, ctx: ActionContext, inspection: Inspection, params: dict[str, Any]) -> None:

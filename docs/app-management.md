@@ -49,10 +49,11 @@ harmony-pilot ledger reconcile --device harmony-01 --action app.install --idempo
 
 ```bash
 harmony-pilot ledger resolve --device harmony-01 --action app.install --idempotency-key deploy-v1 --params-json '<原始 data.params JSON>' --note '已人工确认应用构建与运行结果' --json
+harmony-pilot ledger release --device harmony-01 --action app.install --idempotency-key deploy-v1 --params-json '<原始 data.params JSON>' --note '已人工确认未产生副作用，释放重试' --json
 harmony-pilot ledger prune --older-than-days 90 --json
 ```
 
-`resolve` 记录成功核验和备注，并继续保留幂等键。`prune` 只清理已成功结案的历史，保留 `submitting` 和 `unknown`。裁剪后的历史幂等键将失去防重记录，应按业务防重期限设置保留天数。账本 v1 会在事务中自动迁移，保留原有记录。
+`resolve` 记录成功核验和备注，并继续保留幂等键。`release` 仅面向本机人工操作，在持物理设备锁并核对原请求参数与插件版本后，释放 `submitting` / `unknown` 预留并向 `resolutions` 表写入不可变 `released` 审计记录，允许随后复用原幂等键重试；已确认 `succeeded` / `already_done` 的记录不可释放。`prune` 只清理已成功结案的历史，保留 `submitting` 和 `unknown`。裁剪后的历史幂等键将失去防重记录，应按业务防重期限设置保留天数。账本 v1 会在事务中自动迁移，保留原有记录。
 
 ## 本地 Agent 交互
 

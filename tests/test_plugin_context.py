@@ -215,3 +215,84 @@ def test_version_order_and_rejected_noncanonical_minimum():
     for invalid in ["0.2", "v0.2.0", ">=0.2.0", "0.02.0", "0.2.0+private", True, None]:
         with pytest.raises(DeviceConfigurationError):
             parse_pilot_version(invalid)
+
+
+def test_prepare_stage_allows_bound_interaction_and_merges_metrics(context_setup, tmp_path):
+    from moyu_harmony_pilot.actions import IdempotentAction
+
+    _, device, _ = context_setup
+    seen_metrics = {}
+
+    class InteractivePrepareAction(IdempotentAction):
+        spec = replace(
+            context_setup[0].spec,
+            action_id="test.interactive_prepare",
+            inspection_metrics_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"before": {"type": "integer"}, "nav_steps": {"type": "integer"}},
+                "required": ["before"],
+            },
+        )
+
+        def __init__(self):
+            self.already_done_in_prepare = False
+            self.calls = []
+
+        def inspect(self, ctx, params):
+            self.calls.append("inspect")
+            ctx.interact().observe()
+            return Inspection(status="ready", metrics={"before": 3})
+
+        def prepare(self, ctx, inspection, params):
+            self.calls.append("prepare")
+            with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
+                expected = 1 if self.already_done_in_prepare else 0
+                assert db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == expected
+            snapshot = ctx.interact().observe()
+            ctx.interact().back(layout_hash=snapshot.layout_hash)
+            if self.already_done_in_prepare:
+                return Inspection(status="already_done", metrics={"count": 9})
+            return Inspection(status="ready", state="navigated", metrics={"nav_steps": 1})
+
+        def submit(self, ctx, inspection, params):
+            self.calls.append(f"submit:{inspection.state}")
+            assert ctx.inspection_metrics == {"before": 3, "nav_steps": 1}
+
+        def confirm(self, ctx, params):
+            self.calls.append("confirm")
+            seen_metrics.update(ctx.inspection_metrics)
+            return ActionOutcome(status="succeeded", metrics={"count": 4})
+
+    plugin = InteractivePrepareAction()
+    registry = ActionRegistry()
+    registry.register(plugin)
+    runner = ActionRunner(registry, state_dir=tmp_path)
+
+    # Cancelled during prepare does not create a ledger reservation.
+    cancelled_once = runner.run(
+        device,
+        plugin.spec.action_id,
+        {},
+        idempotency_key="prep-key",
+        cancelled=lambda: "prepare" in plugin.calls,
+    )
+    assert cancelled_once.error_code == "action_cancelled"
+    assert ActionLedger(tmp_path / "actions.sqlite3").records() == []
+
+    # Same key succeeds once cancellation clears, keeping merged inspect + prepare metrics.
+    plugin.calls.clear()
+    outcome = runner.run(device, plugin.spec.action_id, {}, idempotency_key="prep-key")
+    assert outcome.status == "succeeded"
+    assert seen_metrics == {"before": 3, "nav_steps": 1}
+    assert plugin.calls == ["inspect", "prepare", "submit:navigated", "confirm"]
+    record = ActionLedger(tmp_path / "actions.sqlite3").records()[0]
+    assert record["inspection_metrics"] == {"before": 3, "nav_steps": 1}
+
+    # Prepare returning already_done skips submit and stores final metrics cleanly.
+    plugin.calls.clear()
+    plugin.already_done_in_prepare = True
+    done = runner.run(device, plugin.spec.action_id, {}, idempotency_key="prep-already")
+    assert done.status == "already_done"
+    assert done.metrics == {"count": 9}
+    assert plugin.calls == ["inspect", "prepare"]

@@ -225,6 +225,84 @@ def test_manual_resolution_is_offline_without_hdc(packages, tmp_path):
     assert json.loads(output)["data"]["status"] == "succeeded"
 
 
+def test_manual_release_is_offline_without_hdc_and_allows_retry(packages, tmp_path):
+    runner, device, transport, params, _ = packages
+    transport.timeout_after_install = True
+    assert runner.run(device, "app.install", params, idempotency_key="stuck").status == "unknown"
+    assert runner.run(device, "app.install", params, idempotency_key="stuck").status == "unknown"
+    assert transport.submissions == 1
+    # Simulate operator verifying the package was never installed on the device.
+    transport.apps.clear()
+
+    config = tmp_path / "devices.local.json"
+    config.write_text(json.dumps({"devices": {"phone": device.profile.serial}}))
+    config.chmod(0o600)
+    base = [
+        "ledger",
+        "release",
+        "--json",
+        "--config",
+        str(config),
+        "--state-dir",
+        str(tmp_path),
+        "--hdc-path",
+        "/unavailable/hdc",
+        "--device",
+        "phone",
+        "--action",
+        "app.install",
+        "--idempotency-key",
+        "stuck",
+        "--params-json",
+        json.dumps(params),
+        "--note",
+        "Verified device never installed package",
+    ]
+    code, output, _ = _run_cli(base, env={})
+    assert code == 0, output
+    data = json.loads(output)["data"]
+    assert data["released"] is True
+    assert data["action"] == "app.install"
+
+    # Retrying with the same idempotency key now executes and succeeds.
+    transport.timeout_after_install = False
+    retried = runner.run(device, "app.install", params, idempotency_key="stuck")
+    assert retried.status == "succeeded"
+    assert transport.submissions == 2
+
+    # Confirmed completion cannot be released via CLI or SDK.
+    code, output, _ = _run_cli(base, env={})
+    assert code == 2, output
+    with pytest.raises(DeviceConfigurationError, match="Only uncertain reservations"):
+        runner.release(
+            device,
+            "app.install",
+            params,
+            idempotency_key="stuck",
+            note="Should be rejected",
+        )
+
+    # SDK release also works directly for uncertain reservations.
+    transport.apps.clear()
+    transport.timeout_after_install = True
+    assert (
+        runner.run(device, "app.install", params, idempotency_key="sdk-stuck").status == "unknown"
+    )
+    transport.apps.clear()
+    runner.release(
+        device,
+        "app.install",
+        params,
+        idempotency_key="sdk-stuck",
+        note="Verified unapplied in SDK",
+    )
+    transport.timeout_after_install = False
+    assert (
+        runner.run(device, "app.install", params, idempotency_key="sdk-stuck").status
+        == "succeeded"
+    )
+
+
 @pytest.mark.parametrize("existing_version", [None, 6, 7])
 def test_uncertain_install_readonly_reconciliation(packages, existing_version):
     runner, device, transport, params, _ = packages

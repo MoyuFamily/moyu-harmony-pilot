@@ -31,7 +31,7 @@ harmony-pilot plugins validate device.health --params-json '{}' --json
 harmony-pilot run --device harmony-01 --action device.health --params-json '{}' --json
 ```
 
-For authorized side effects, preserve a stable idempotency key for the same logical operation and preserve the shared state directory across retries. `already_done` confirms previous completion. For `unknown`, stop submission retries and use read-only reconciliation or human review. Changing the key to bypass uncertainty defeats the ledger.
+For authorized side effects, preserve a stable idempotency key for the same logical operation and preserve the shared state directory across retries. `already_done` confirms previous completion. For `unknown`, stop submission retries and use read-only reconciliation (`ledger reconcile`) or human review (`ledger resolve --note` to confirm completion, or local-only `ledger release --note` after verifying no side effect occurred to allow retrying with the same key). Changing the key to bypass uncertainty defeats the ledger.
 
 ## Local interactive work
 
@@ -59,7 +59,7 @@ Use `inspect --out PRIVATE.html` for a local visual inspection artifact and `led
 
 For plugin development, start with `examples/plugin-template` in a Pilot source checkout. Keep application-specific logic in an external plugin and use the public `actions`, `device`, `ui` and optional `vision` APIs. Install the plugin into the Pilot environment, inspect it with `plugins describe`, validate sample parameters with `plugins validate`, and run the template's `python -m tests` offline contracts. For Bridge deployment, add an explicit per-device allowlist entry and inspect `serve --config PRIVATE_CONFIG --check --json` before execution. The installed CLI schema and plugin descriptions define accepted inputs.
 
-Plugins using new context APIs declare `min_pilot_version="0.2.0.dev0"` and a matching package dependency. Use `ctx.interact()` inside Runner stages to reuse the lock and budget. Only `submit` may mutate after the durable reservation. `inspection_metrics_schema` describes inspect-stage baselines, while final success must satisfy `metrics_schema.required`. Preserve `human_required` and `failed` inspection outcomes even when success metrics are absent.
+Plugins using new context APIs declare `min_pilot_version="0.2.0.dev0"` (or `"0.2.0rc1"` when relying on `IdempotentAction.prepare`) and a matching package dependency. Use `ctx.interact()` inside Runner stages to reuse the lock and budget. `prepare` may run idempotent pre-submission setup (such as launching the app or navigating) before ledger reservation without locking the key on pre-submit failure; `submit` performs the final mutation after the durable reservation. `inspection_metrics_schema` describes inspect/prepare baselines, while final success must satisfy `metrics_schema.required`. Preserve `human_required` and `failed` inspection/prepare outcomes even when success metrics are absent.
 
 Reuse `moyu_harmony_pilot.testing` for synthetic device transports and contract assertions. `fixture capture --out PRIVATE.json --json` produces a redacted candidate with `manual_review_required=true`. Review before committing. `testing.broker.MockBroker` validates the four Bridge endpoints entirely in memory and can be injected into `HttpBridgeClient` as its opener.
 

@@ -70,9 +70,9 @@ class InteractionSession:
             raise DeviceConfigurationError("Invalid local interaction budget.")
 
     def _require_mutation_stage(self, operation: str = "Mutating UI interactions") -> None:
-        if self._context_bound and self.context.stage != "submit":
+        if self._context_bound and self.context.stage not in {"preparing", "submit"}:
             raise DeviceConfigurationError(
-                f"{operation} are only allowed during the submit stage after ledger reservation."
+                f"{operation} are only allowed during the preparing or submit stage."
             )
 
     def _locked(self, callback: Callable[[], T], *, mutating: bool = False) -> T:
@@ -83,7 +83,7 @@ class InteractionSession:
                 raise DeviceConfigurationError(
                     "Context interactions require the runner main thread."
                 )
-            if self.context.stage not in {"readonly", "inspect", "submit", "confirm"}:
+            if self.context.stage not in {"readonly", "inspect", "preparing", "submit", "confirm"}:
                 raise DeviceConfigurationError("Action context is no longer executing.")
             self.context.checkpoint()
             result = callback()

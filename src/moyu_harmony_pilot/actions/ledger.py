@@ -203,6 +203,42 @@ class ActionLedger:
                 (*key.identity, key.request_hash, payload["status"], note.strip()),
             )
 
+    def release(self, key: LedgerKey, *, note: str) -> None:
+        """Release an uncertain reservation under the physical device lock for retry."""
+        if not isinstance(note, str) or not 1 <= len(note.strip()) <= 256:
+            raise DeviceConfigurationError("Release requires a 1–256 character audit note.")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT request_hash, status FROM actions "
+                "WHERE device_hash=? AND action_id=? AND key_hash=?",
+                key.identity,
+            ).fetchone()
+            if row is None:
+                raise DeviceConfigurationError("No matching uncertain reservation to release.")
+            if row[0] != key.request_hash:
+                raise DeviceConfigurationError(
+                    "Idempotency key is already bound to different parameters or plugin version."
+                )
+            if row[1] not in {"submitting", "unknown"}:
+                raise DeviceConfigurationError(
+                    "Only uncertain reservations can be released; confirmed actions remain locked."
+                )
+            deleted = db.execute(
+                "DELETE FROM actions "
+                "WHERE device_hash=? AND action_id=? AND key_hash=? AND request_hash=? "
+                "AND status IN ('submitting', 'unknown')",
+                (*key.identity, key.request_hash),
+            )
+            if deleted.rowcount != 1:
+                raise DeviceConfigurationError("No matching uncertain reservation to release.")
+            db.execute(
+                "INSERT INTO resolutions"
+                "(device_hash, action_id, key_hash, request_hash, status, note) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (*key.identity, key.request_hash, "released", note.strip()),
+            )
+
     def prune(self, *, older_than_days: int) -> int:
         if type(older_than_days) is not int or older_than_days < 1:
             raise DeviceConfigurationError("Retention must be at least one day.")

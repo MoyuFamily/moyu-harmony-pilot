@@ -779,3 +779,45 @@ def test_unittest_base_owns_temp_state_and_restores_guards():
         case.doCleanups()
     assert not case.state_dir.exists()
     assert subprocess.Popen is outer_popen
+
+
+def test_contract_assertions_accept_prepare_stage(tmp_path):
+    from moyu_harmony_pilot.actions import IdempotentAction
+
+    class PreparableContractAction(IdempotentAction):
+        spec = ActionSpec(
+            "test.preparable_contract",
+            "1",
+            "Preparable contract action",
+            side_effect="mutating",
+            min_pilot_version="0.2.0.dev0",
+        )
+
+        def inspect(self, ctx, params):
+            ctx.interact().observe()
+            return Inspection(status="ready")
+
+        def prepare(self, ctx, inspection, params):
+            snap = ctx.interact().observe()
+            ctx.interact().back(layout_hash=snap.layout_hash)
+            return Inspection(status="ready", state="prepared")
+
+        def submit(self, ctx, inspection, params):
+            assert inspection.state == "prepared"
+            snap = ctx.interact().observe()
+            ctx.interact().back(layout_hash=snap.layout_hash)
+
+        def confirm(self, ctx, params):
+            ctx.interact().observe()
+            return ActionOutcome(status="succeeded")
+
+    fake = make_fake_device(
+        state=FakeDeviceState("SYNTHETIC_PREPARE", layouts=[toggle_layout()]),
+        state_dir=tmp_path / "ok",
+    )
+    registry = ActionRegistry(allowed_actions=["test.preparable_contract"])
+    registry.register(PreparableContractAction())
+    runner = ActionRunner(registry, state_dir=tmp_path / "ok")
+    assert_idempotent_success(
+        runner, fake, "test.preparable_contract", {}, expected_mutations=2, remote=True
+    )

@@ -141,29 +141,31 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 
 ## 4. 有副作用动作与幂等账本
 
-有副作用的业务动作必须继承 `IdempotentAction`，拆分为三个明确阶段：
+有副作用的业务动作必须继承 `IdempotentAction`，拆分为以下明确阶段：
 
-1. **`inspect(ctx, params)`（只读检查）**：检查当前界面状态，返回 `Inspection`（状态为 `ready`、`already_done`、`human_required` 或 `failed`），可携带仅供本轮 `submit` 使用的私有上下文。
-2. **`submit(ctx, inspection, params)`（至多一次提交）**：仅在运行器先把 `submitting` 预留写入 SQLite 账本后才会被调用，负责执行真正产生副作用的操作。
-3. **`confirm(ctx, params)`（独立复核）**：提交完成后独立核验界面结果，返回有界 `ActionOutcome`。
+1. **`inspect(ctx, params)`（只读检查）**：检查当前界面状态，返回 `Inspection`（状态为 `ready`、`already_done`、`human_required` 或 `failed`），可携带仅供后续阶段使用的私有上下文。
+2. **`prepare(ctx, inspection, params)`（可选，提交前幂等准备）**：仅当 `inspect` 返回 `ready` 且插件覆写了该方法时，在写入 `submitting` 账本预留**之前**执行。适合放拉起应用、关闭通用弹窗、导航至目标页面并再次确认是否已完成等可重复前置步骤；返回 `ready` 时自动继承并合并 `inspect` 阶段的基线指标。此阶段返回 `human_required` / `failed` 或抛错不会锁定幂等键，修复环境后可直接用原键重试；返回 `already_done` 则跳过 `submit` 并记录已完成。依赖该阶段的插件建议声明 `min_pilot_version="0.2.0rc1"`。
+3. **`submit(ctx, inspection, params)`（至多一次提交）**：仅在运行器先把 `submitting` 预留写入 SQLite 账本后才会被调用，负责执行真正产生副作用的操作。
+4. **`confirm(ctx, params)`（独立复核）**：提交完成后独立核验界面结果，返回有界 `ActionOutcome`。
 
 ### 阶段指标与回执
 
 | 返回阶段 | 指标校验 |
 | --- | --- |
-| `inspect` 返回 `ready` | 使用可选的 `inspection_metrics_schema`，省略时沿用最终 Schema 的字段和类型并放宽必填项 |
-| `inspect` 返回 `human_required` / `failed` | 校验检查阶段的已声明字段、类型与大小，允许缺少成功指标 |
-| `inspect` 返回 `already_done` | 完整校验最终成功指标 |
+| `inspect` / `prepare` 返回 `ready` | 使用可选的 `inspection_metrics_schema`，省略时沿用最终 Schema 的字段和类型并放宽必填项 |
+| `inspect` / `prepare` 返回 `human_required` / `failed` | 校验检查阶段的已声明字段、类型与大小，允许缺少成功指标 |
+| `inspect` / `prepare` 返回 `already_done` | 完整校验最终成功指标 |
 | 最终 `succeeded` / `already_done` | 完整校验 `metrics_schema` 的必填项 |
 | 其他最终结果 | 保留字段、类型与大小校验，允许缺少成功指标 |
 
-`Inspection.summary` 与 `Inspection.error_code` 可携带脱敏的接管原因。检查阶段指标随提交前预留落盘，`confirm` 通过 `ctx.inspection_metrics` 读取。只读对账会设置 `ctx.reconciling=True`，旧账本缺少的基线字段按空字典处理，插件应返回 `unknown` 并请求人工核验。
+`Inspection.summary` 与 `Inspection.error_code` 可携带脱敏的接管原因。检查/准备阶段指标随提交前预留落盘，`confirm` 通过 `ctx.inspection_metrics` 读取。只读对账会设置 `ctx.reconciling=True`，旧账本缺少的基线字段按空字典处理，插件应返回 `unknown` 并请求人工核验。
 
 ### 插件内交互
 
 在 Runner 调用的阶段内使用 `session = ctx.interact()`。该会话复用设备锁、阶段计时器、步数预算和提交前取消信号，每次观察、等待或交互都会计入总预算。Runner 返回后，会话随上下文失效。
 
 - `inspect`、只读 `execute` 和 `confirm` 可调用 `observe`、无弹窗处理的 `wait_for`。
+- `prepare` 可在账本预留前调用交互、应用启动、滚动查找与弹窗处理，用于把界面带到可提交状态；若遇敏感屏、过温或取消信号会安全中止且不落防重记录。
 - `submit` 可在账本预留完成后调用点击、输入、滑动、导航及弹窗处理。每次写操作仍校验新鲜 `layout_hash`、敏感屏和温度。
 - `ctx.dismiss_popup(watcher)` 复用同一交互接口。插件在提交后遇到不确定结果时应立即结束，让 Runner 保留 `unknown`，后续通过 `ledger reconcile` 只读复核。
 
@@ -172,11 +174,11 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 ### 账本与状态流转规则
 
 - **幂等身份**：每次有副作用执行都必须显式提供 `--idempotency-key`（1–256 字符）。SQLite 账本以「哈希后的物理设备串号 + 动作 ID + 哈希后的幂等键」作为唯一主键，并用请求指纹绑定参数与插件 `version`；同一幂等键若更换参数或版本号会返回 `configuration_error`。
-- **取消边界**：准备与 `inspect` 阶段（包括写入预留前的最后一刻）都会响应取消信号；一旦 `submitting` 预留落盘，运行器会优先在原时间和步数预算内走完 `submit` 与 `confirm`，关机或租约取消在其后生效。
+- **取消边界**：`inspect` 与 `prepare` 阶段（包括写入预留前的最后一刻）都会响应取消信号；一旦 `submitting` 预留落盘，运行器会优先在原时间和步数预算内走完 `submit` 与 `confirm`，关机或租约取消在其后生效。
 - **防重放与崩溃恢复**：
   - 已确认完成的记录，再次调用会直接短路返回 `already_done`，不会重复唤醒手机或调用插件；
   - 提交阶段发生报错、超时、中断、无法确认或落盘失败，均会落为 `unknown`；进程重启后，持锁检查到遗留的 `submitting` 记录也会自动恢复为 `unknown`；
-  - 对 `unknown` 记录重复使用同一幂等键会持续返回 `unknown`。可通过 `ledger reconcile` 调用只读 `confirm()`，或在人工核验后使用 `ledger resolve` 记录成功结案。命令和保留期限见[应用管理与诊断](app-management.md)。
+  - 对 `unknown` 记录重复使用同一幂等键会持续返回 `unknown`。可通过 `ledger reconcile` 调用只读 `confirm()`，在人工核验确认已生效后使用 `ledger resolve` 记录成功结案，或在人工核验确认副作用未发生后使用 `ledger release` 释放不确定预留以便原键重试。命令和保留期限见[应用管理与诊断](app-management.md)。
 - **纯净输出**：插件在发现或执行期间向标准输出打印的进度信息，在 CLI 模式下会被重定向到 `stderr`，确保 `stdout` 始终只输出单个合法 JSON 信封。
 
 ---

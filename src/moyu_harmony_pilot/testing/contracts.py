@@ -82,6 +82,14 @@ def _run_mutating(
 
     def observe_stage(stage: str) -> None:
         stages.append((stage, len(fake.transport.mutating_calls)))
+        if stage == "preparing":
+            try:
+                assert _reservation(
+                    runner, fake.device, action_id, params, idempotency_key,
+                ) is None, "Preparation started after a durable reservation."
+            except Exception as exc:
+                stage_errors.append(exc)
+                raise
         if stage == "submit":
             try:
                 assert_submitting(
@@ -101,7 +109,12 @@ def _run_mutating(
         raise AssertionError("Submission reservation contract failed.") from stage_errors[0]
     fake.transport.assert_click_targets_consumed()
     names = [stage for stage, _ in stages]
-    assert names in (["inspect", "submit"], ["inspect", "submit", "confirm"]), (
+    assert names in (
+        ["inspect", "submit"],
+        ["inspect", "submit", "confirm"],
+        ["inspect", "preparing", "submit"],
+        ["inspect", "preparing", "submit", "confirm"],
+    ), (
         f"Expected one inspect/submit cycle, got {names!r}."
     )
     assert stages[1][1] == before, "Inspection attempted a mutation before reservation."

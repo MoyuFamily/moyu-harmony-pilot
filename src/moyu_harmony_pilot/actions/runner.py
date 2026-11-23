@@ -149,6 +149,39 @@ class ActionRunner:
             finally:
                 ctx.stage = None
 
+    @staticmethod
+    def _validate_inspection(
+        spec: ActionSpec,
+        inspection: Inspection,
+        *,
+        base_metrics: dict[str, int | float | str | bool | None] | None = None,
+    ) -> ActionOutcome:
+        if not isinstance(inspection, Inspection) or inspection.status not in {
+            "ready",
+            "already_done",
+            "human_required",
+            "failed",
+        }:
+            raise DeviceConfigurationError("Invalid plugin inspection result.")
+        if not isinstance(inspection.metrics, dict):
+            raise DeviceConfigurationError("Invalid action receipt fields.")
+        metrics = (
+            {**base_metrics, **inspection.metrics}
+            if base_metrics and inspection.status == "ready"
+            else inspection.metrics
+        )
+        summary = (
+            "Read-only inspection completed."
+            if inspection.summary is None
+            else inspection.summary
+        )
+        return ActionOutcome(
+            status="succeeded" if inspection.status == "ready" else inspection.status,
+            summary=summary,
+            metrics=metrics,
+            error_code=inspection.error_code,
+        ).validate(spec, stage="inspect")
+
     def _mutating(
         self,
         plugin: IdempotentAction,
@@ -163,28 +196,23 @@ class ActionRunner:
         inspection = _bounded_call(
             ctx, lambda: plugin.inspect(ctx, json_copy(params)), stage="inspect"
         )
-        if not isinstance(inspection, Inspection) or inspection.status not in {
-            "ready",
-            "already_done",
-            "human_required",
-            "failed",
-        }:
-            raise DeviceConfigurationError("Invalid plugin inspection result.")
-        summary = (
-            "Read-only inspection completed."
-            if inspection.summary is None
-            else inspection.summary
-        )
-        observed = ActionOutcome(
-            status="succeeded" if inspection.status == "ready" else inspection.status,
-            summary=summary,
-            metrics=inspection.metrics,
-            error_code=inspection.error_code,
-        ).validate(spec, stage="inspect")
+        observed = self._validate_inspection(spec, inspection)
         if inspection.status in {"human_required", "failed"}:
             return observed
+        if inspection.status == "ready" and type(plugin).prepare is not IdempotentAction.prepare:
+            ctx.stage = "preparing"
+            inspection = _bounded_call(
+                ctx,
+                lambda: plugin.prepare(ctx, inspection, json_copy(params)),
+                stage="preparing",
+            )
+            observed = self._validate_inspection(
+                spec, inspection, base_metrics=observed.metrics
+            )
+            if inspection.status in {"human_required", "failed"}:
+                return observed
         if inspection.status == "ready":
-            # A sensitive screen appearing during inspect must stop the final submission.
+            # A sensitive screen appearing during inspect or prepare must stop submission.
             _, snapshot = _bounded_call(
                 ctx,
                 lambda: ctx.device.dump_ui_compact(
@@ -285,3 +313,25 @@ class ActionRunner:
                     return previous
             ledger.resolve(key, outcome, note=note or "Read-only plugin confirmation.")
             return outcome
+
+    def release(
+        self,
+        device: HarmonyDevice,
+        action_id: str,
+        params: dict[str, Any],
+        *,
+        idempotency_key: str,
+        note: str,
+    ) -> None:
+        """Explicitly release an uncertain reservation for retry after operator verification."""
+        plugin, spec, params, _ = self.prepare(
+            action_id, params, idempotency_key=idempotency_key
+        )
+        if not isinstance(plugin, IdempotentAction):
+            raise DeviceConfigurationError("Release requires an idempotent action.")
+        with device.acquire_lock():
+            ledger = ActionLedger(self.state_dir / "actions.sqlite3")
+            key = ledger.make_key(
+                device.profile.serial, action_id, idempotency_key, spec.version, params
+            )
+            ledger.release(key, note=note)

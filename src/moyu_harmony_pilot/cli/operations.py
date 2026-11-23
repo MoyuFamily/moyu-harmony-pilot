@@ -211,7 +211,7 @@ OPERATION_SCHEMAS: dict[str, Any] = {
         },
     },
     "ledger": {
-        "description": "Inspect, reconcile, resolve, and retain durable action records.",
+        "description": "Inspect, reconcile, resolve, release, and retain durable action records.",
         "options": {},
         "side_effect": "subcommand_defined",
         "subcommands": {
@@ -219,6 +219,18 @@ OPERATION_SCHEMAS: dict[str, Any] = {
             "inspect": {"options": REQUEST, "side_effect": "readonly"},
             "reconcile": {"options": REQUEST, "side_effect": "local_ledger"},
             "resolve": {
+                "options": {
+                    **REQUEST,
+                    "--note": {
+                        "type": "string",
+                        "required": True,
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                },
+                "side_effect": "local_ledger",
+            },
+            "release": {
                 "options": {
                     **REQUEST,
                     "--note": {
@@ -479,9 +491,10 @@ def _ledger(
             device_hash=device_hash, action_id=args.action, key_hash=digest(args.idempotency_key)
         )
         return {"record": rows[0] if rows else None}
-    if args.operation == "resolve":
+    if args.operation in {"resolve", "release"}:
+        label = "Resolution" if args.operation == "resolve" else "Release"
         if profile is None:
-            raise DeviceConfigurationError("Resolution requires a configured device alias.")
+            raise DeviceConfigurationError(f"{label} requires a configured device alias.")
         actions = ActionRegistry.discover(env=env)
         runner = ActionRunner(actions, state_dir=args.state_dir)
         _, spec, params, _ = runner.prepare(
@@ -491,13 +504,21 @@ def _ledger(
             timeout=args.timeout,
         )
         if spec.side_effect != "mutating":
-            raise DeviceConfigurationError("Resolution requires a mutating action.")
+            raise DeviceConfigurationError(f"{label} requires a mutating action.")
         key = ledger.make_key(
             profile.serial, args.action, args.idempotency_key, spec.version, params
         )
         with DeviceLock(
             profile.serial, alias=profile.alias, lock_dir=Path(args.state_dir) / "locks"
         ):
+            if args.operation == "release":
+                ledger.release(key, note=args.note)
+                return {
+                    "alias": profile.alias,
+                    "action": args.action,
+                    "released": True,
+                    "summary": "Uncertain reservation released by operator for retry.",
+                }
             outcome = ledger.lookup(key)
             if outcome is None:
                 raise DeviceConfigurationError("No matching prior submission.")
