@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from moyu_harmony_pilot.vision.models import (
     OcrEngine,
@@ -54,7 +56,8 @@ class RapidOcrEngine:
 
 class MacOSVisionOcrEngine:
     def __init__(self, *, languages: tuple[str, ...] = ("zh-Hans", "en-US")) -> None:
-        if sys.platform != "darwin":
+        # Type-check the optional adapter on every CI platform while retaining the runtime gate.
+        if sys.platform != "darwin" and not TYPE_CHECKING:
             raise VisionUnavailableError("The macOS Vision backend requires macOS.")
         try:
             import Foundation
@@ -121,7 +124,20 @@ class MacOSVisionOcrEngine:
             raise VisionError("macOS Vision recognition failed.") from exc
 
 
+def detect_ocr_backend() -> str:
+    """Return the first installed local OCR backend (`macos` or `rapidocr`)."""
+    if sys.platform == "darwin" and importlib.util.find_spec("Vision") is not None:
+        return "macos"
+    if importlib.util.find_spec("rapidocr_onnxruntime") is not None:
+        return "rapidocr"
+    raise VisionUnavailableError(
+        "No local OCR backend is installed. Install vision-macos or vision-rapidocr."
+    )
+
+
 def create_ocr_engine(backend: str | None = None) -> OcrEngine:
+    if backend == "auto":
+        backend = detect_ocr_backend()
     if backend == "macos":
         return MacOSVisionOcrEngine()
     if backend == "rapidocr":

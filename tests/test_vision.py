@@ -204,7 +204,10 @@ def test_som_cli_failure_preserves_destination_and_removes_temporary_files(
     else:
         state.timeout_on_cmd_prefix = "uitest screenCap"
     code, output, _ = _run_cli(
-        ["screenshot", "--out", str(destination), "--som", "--json"],
+        [
+            "screenshot", "--out", str(destination), "--som", "--json",
+            "--state-dir", str(tmp_path / "state"),
+        ],
         transport=transport,
         cwd=tmp_path,
         env={},
@@ -235,7 +238,10 @@ def test_som_temporary_capture_preserves_format_selection(
     )
     transport = FakeHdcTransport([state])
     destination = tmp_path / filename
-    arguments = ["screenshot", "--out", str(destination), "--som", "--json"]
+    arguments = [
+        "screenshot", "--out", str(destination), "--som", "--json",
+        "--state-dir", str(tmp_path / "state"),
+    ]
     if explicit_format:
         arguments.extend(["--format", explicit_format])
     code, output, _ = _run_cli(arguments, transport=transport, cwd=tmp_path, env={})

@@ -23,7 +23,7 @@ class AppInfo:
     entry_ability: str | None
     entry_module: str | None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str | int | None]:
         return asdict(self)
 
 
@@ -31,6 +31,11 @@ def parse_app_list(output: str) -> list[str]:
     text = output.strip()
     if text.lower().startswith("all bundle names:"):
         values = text.split(":", 1)[1].split()
+    elif re.match(r"ID:\s*\d+:\s*(?:\n|$)", text):
+        values = [
+            line.strip() for line in text.splitlines()
+            if line.strip() and not re.fullmatch(r"ID:\s*\d+:", line.strip())
+        ]
     else:
         try:
             values = json.loads(text)
@@ -38,7 +43,10 @@ def parse_app_list(output: str) -> list[str]:
             raise DeviceError("Unrecognized bm application list.", code="app_query_failed") from exc
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise DeviceError("Invalid bm application list.", code="app_query_failed")
-    return sorted({validate_bundle(value) for value in values})
+    try:
+        return sorted({validate_bundle(value) for value in values})
+    except DeviceConfigurationError as exc:
+        raise DeviceError("Invalid bm application list.", code="app_query_failed") from exc
 
 
 def parse_app_info(output: str, bundle_name: str) -> AppInfo:

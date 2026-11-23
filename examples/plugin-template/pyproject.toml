@@ -5,15 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "harmony-pilot-example"
 version = "0.1.0"
-description = "Example external battery-check action for Harmony Pilot."
+description = "Offline-tested battery and idempotent demo UI plugins for Harmony Pilot."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["moyu-harmony-pilot>=0.1.0,<0.2"]
+dependencies = ["moyu-harmony-pilot>=0.2.0rc1,<0.3"]
 
 [project.entry-points."moyu_harmony_pilot.actions"]
 "example.battery_check" = "harmony_pilot_example.battery:BatteryCheck"
+"example.demo_toggle" = "harmony_pilot_example.toggle:DemoToggle"
 
 [tool.setuptools.packages.find]
 where = ["src"]

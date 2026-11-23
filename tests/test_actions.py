@@ -41,6 +41,39 @@ from moyu_harmony_pilot.hdc import HdcClient
 from tests.fakes import BATTERY_61_OVERHEATED, FakeDeviceState, FakeHdcTransport
 
 
+def test_validation_reports_declared_paths_without_echoing_input():
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["items"],
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["retry.limit"],
+                    "properties": {"retry.limit": {"type": "integer", "minimum": 1}},
+                },
+            },
+        },
+    }
+    check_schema(schema)
+    cases = [
+        ({}, '$["items"]'),
+        ({"items": [{}]}, '$["items"][0]["retry.limit"]'),
+        ({"items": [{"retry.limit": "private-value"}]}, '$["items"][0]["retry.limit"]'),
+        ({"items": [{"retry.limit": 0}]}, '$["items"][0]["retry.limit"]'),
+        ({"items": [{"retry.limit": 1, "private-key": "private-value"}]}, '$["items"][0]'),
+    ]
+    for value, expected_path in cases:
+        with pytest.raises(DeviceConfigurationError) as error:
+            validate_value(value, schema)
+        assert expected_path in str(error.value)
+        assert "private-key" not in str(error.value)
+        assert "private-value" not in str(error.value)
+
+
 @pytest.fixture(autouse=True)
 def isolated_plugin_environment(monkeypatch):
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [])
@@ -664,3 +697,84 @@ def test_repository_external_example_runs_through_discovery(execution, tmp_path)
     assert result.status == "succeeded"
     assert result.metrics["visible_elements"] > 0
     assert not execution[3].all_remote_tmp_files()
+
+
+def test_prepare_stage_runs_before_reservation_and_allows_retry(execution, tmp_path):
+    from moyu_harmony_pilot.device import HumanRequiredError
+
+    _, device, _, _, _ = execution
+
+    def row_count():
+        with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
+            return db.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+
+    class PreparableMutation(IdempotentAction):
+        spec = ActionSpec("test.preparable", "1", "Preparable mutation", side_effect="mutating")
+
+        def __init__(self):
+            self.calls = []
+            self.prepare_mode = "raise_human"
+            self.submit_raises = False
+
+        def inspect(self, ctx, params):
+            self.calls.append("inspect")
+            return Inspection(status="ready", state="needs_prepare")
+
+        def prepare(self, ctx, inspection, params):
+            self.calls.append(f"prepare:{inspection.state}")
+            if self.prepare_mode == "raise_human":
+                assert row_count() == 0
+                raise HumanRequiredError("App launch blocked before submission.")
+            if self.prepare_mode == "return_human":
+                assert row_count() == 0
+                return Inspection(status="human_required")
+            return Inspection(status="ready", state="prepared")
+
+        def submit(self, ctx, inspection, params):
+            self.calls.append(f"submit:{inspection.state}")
+            with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
+                statuses = [row[0] for row in db.execute("SELECT status FROM actions").fetchall()]
+            assert "submitting" in statuses
+            if self.submit_raises:
+                raise TimeoutError("click timeout")
+
+        def confirm(self, ctx, params):
+            self.calls.append("confirm")
+            return ActionOutcome(status="succeeded")
+
+    plugin = PreparableMutation()
+    registry = ActionRegistry()
+    registry.register(plugin)
+    runner = ActionRunner(registry, state_dir=tmp_path)
+    stages = []
+
+    first = runner.run(
+        device, plugin.spec.action_id, {}, idempotency_key="day-1", on_stage=stages.append
+    )
+    assert first.status == "human_required"
+    assert row_count() == 0
+    assert stages == ["inspect", "preparing"]
+
+    plugin.prepare_mode = "return_human"
+    second = runner.run(device, plugin.spec.action_id, {}, idempotency_key="day-1")
+    assert second.status == "human_required"
+    assert row_count() == 0
+
+    stages.clear()
+    plugin.prepare_mode = "ok"
+    third = runner.run(
+        device, plugin.spec.action_id, {}, idempotency_key="day-1", on_stage=stages.append
+    )
+    assert third.status == "succeeded"
+    assert read_status(tmp_path) == "succeeded"
+    assert stages == ["inspect", "preparing", "submit", "confirm"]
+    assert plugin.calls[-4:] == ["inspect", "prepare:needs_prepare", "submit:prepared", "confirm"]
+
+    # Post-reservation submit failure still locks the key as unknown.
+    plugin.submit_raises = True
+    failed = runner.run(device, plugin.spec.action_id, {}, idempotency_key="day-2")
+    assert failed.status == "unknown"
+    calls_before_replay = len(plugin.calls)
+    replay = runner.run(device, plugin.spec.action_id, {}, idempotency_key="day-2")
+    assert replay.status == "unknown"
+    assert len(plugin.calls) == calls_before_replay

@@ -7,6 +7,7 @@ import html
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from moyu_harmony_pilot.device import DeviceConfigurationError, HarmonyDevice, write_secure_text
 from moyu_harmony_pilot.ui import CompactSnapshot, UiError
@@ -103,7 +104,9 @@ document.getElementById('filter').addEventListener('input', event => {
     return _page("Harmony Pilot 界面检查", body)
 
 
-def capture_inspector(device: HarmonyDevice, output: str | Path, *, timeout: float = 30) -> dict:
+def capture_inspector(
+    device: HarmonyDevice, output: str | Path, *, timeout: float = 30,
+) -> dict[str, str | int]:
     with device.acquire_lock(), tempfile.TemporaryDirectory(prefix="moyu-inspect-") as directory:
         _, before = device.dump_ui_compact(timeout=timeout)
         image = device.screenshot(Path(directory) / "screen.png", timeout=timeout)
@@ -122,10 +125,13 @@ def capture_inspector(device: HarmonyDevice, output: str | Path, *, timeout: flo
     }
 
 
-def write_report(payload: dict | list, output: str | Path) -> Path:
-    content = payload.get("data", payload) if isinstance(payload, dict) else payload
-    if content is None:
-        content = payload.get("error", {})
+def write_report(payload: dict[str, Any] | list[Any], output: str | Path) -> Path:
+    if isinstance(payload, dict):
+        content = payload.get("data", payload)
+        if content is None:
+            content = payload.get("error", {})
+    else:
+        content = payload
     if isinstance(content, dict) and isinstance(content.get("records"), list):
         content = content["records"]
     records = content if isinstance(content, list) else [content]

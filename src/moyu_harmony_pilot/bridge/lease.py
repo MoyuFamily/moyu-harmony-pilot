@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from types import TracebackType
 
 from moyu_harmony_pilot.bridge.client import JsonTransport
 from moyu_harmony_pilot.bridge.config import BridgeConfig
@@ -87,10 +88,15 @@ class LeaseKeeper:
                             "Bridge heartbeat failed during lease maintenance."
                         )
 
-    def __enter__(self):
+    def __enter__(self) -> LeaseKeeper:
         self.thread.start()
         return self
 
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.finished.set()
         self.thread.join(timeout=2 * self.config.request_timeout + 1)

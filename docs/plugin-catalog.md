@@ -10,7 +10,8 @@
 
 | 动作 ID | 来源与部署方式 | Pilot 版本要求 | 离线契约覆盖 |
 | :--- | :--- | :--- | :--- |
-| `example.battery_check` | [独立插件模板](../examples/plugin-template/README.md)，通过 Python 包 entry point 安装 | `>=0.1.0,<0.2` | wheel 安装发现、参数校验、远程白名单、只读设备调用 |
+| `example.battery_check` | [独立插件模板](../examples/plugin-template/README.md)，通过 Python 包 entry point 安装 | `>=0.2.0rc1,<0.3` | wheel 安装发现、参数校验、远程白名单、只读设备调用 |
+| `example.demo_toggle` | 同一独立模板中的三段式合成开关示例 | `>=0.2.0rc1,<0.3` | 提交前预留、成功防重、超时后 `unknown`、只读对账、敏感屏与过温 |
 | `example.health_check` | [Bridge 目录示例](../examples/bridge/plugins/health_check.py)，目录 + `actions.json` | 当前检出版本，API v1 | Fake 设备通过原生 Bridge 与本地 HTTP Broker 端到端联调 |
 | `example.ui_summary` | [本地目录示例](../examples/actions/ui_summary.py)，目录 + `actions.json` | 当前检出版本，API v1 | Fake 设备发现、本地执行与有界紧凑结果 |
 
@@ -36,7 +37,7 @@
 
 ## 3. 开发与兼容性验证
 
-1. 从 [独立插件模板](../examples/plugin-template/README.md) 起步，并对照 [Action 插件开发指南](actions.md) 定义契约；
+1. 使用 `harmony-pilot plugins init ../team-pilot --namespace team` 生成独立工程，并对照 [Action 插件开发指南](actions.md) 定义契约；
 2. 使用模板中的 `python -m tests` 校验已安装的 entry point（任何测试失败、被跳过或空套件都会使校验不通过），并参考模板中的有副作用测试场景补充针对自家业务和脱敏布局 Fixture 的离线测试；
 3. 目录式插件保持 `actions.json` 映射清晰并在同目录文档写明依赖要求；包形式插件通过 `moyu_harmony_pilot.actions` entry point 分组注册，并在 `ActionSpec` 与 `pyproject.toml` 中明确声明版本；
 4. 扩大支持的 Pilot 版本范围前，请先针对新版本或固定开发提交跑通契约测试，并留存插件版本、Pilot 版本、运行矩阵与测试链接。

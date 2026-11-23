@@ -129,7 +129,7 @@ def _load_structured_config_file(path: Path) -> Mapping[str, Any]:
             ) from exc
     elif suffix in {".yaml", ".yml"}:
         try:
-            import yaml  # type: ignore[import-not-found]
+            import yaml
         except ImportError:
             decoded = _parse_simple_yaml(raw_text)
         else:
@@ -342,8 +342,8 @@ class DeviceRegistry:
             if len(online_targets) == 1:
                 chosen = online_targets[0]
                 mapped = self.get_by_serial(chosen.serial)
-                profile = mapped or DeviceProfile(alias="default", serial=chosen.serial)
-                return profile, chosen
+                default_profile = mapped or DeviceProfile(alias="default", serial=chosen.serial)
+                return default_profile, chosen
             if len(online_targets) > 1:
                 raise UnknownDeviceAliasError(
                     "Multiple online HarmonyOS devices detected; "

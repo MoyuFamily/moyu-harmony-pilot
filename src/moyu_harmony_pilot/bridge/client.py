@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import ssl
-from typing import Protocol
+from http.client import HTTPMessage
+from typing import IO, Any, Never, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, OpenerDirector, Request, build_opener
 
 from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.bridge.config import BridgeConfig
@@ -20,20 +21,26 @@ from moyu_harmony_pilot.bridge.protocol import (
 
 
 class JsonTransport(Protocol):
-    def post(self, path: str, payload: dict, *, timeout: float | None = None) -> dict: ...
+    def post(
+        self, path: str, payload: dict[str, Any], *, timeout: float | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class _RejectRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self, req: Request, fp: IO[bytes], code: int, msg: str, headers: HTTPMessage, newurl: str,
+    ) -> Never:
         raise BridgeError("Broker redirects are rejected.", status=code, retryable=False)
 
 
 class HttpBridgeClient:
-    def __init__(self, config: BridgeConfig, *, opener=None) -> None:
+    def __init__(self, config: BridgeConfig, *, opener: OpenerDirector | None = None) -> None:
         self.config = config
         self._opener = opener
 
-    def post(self, path: str, payload: dict, *, timeout: float | None = None) -> dict:
+    def post(
+        self, path: str, payload: dict[str, Any], *, timeout: float | None = None,
+    ) -> dict[str, Any]:
         if not path.startswith("/bridge/v1/") or ".." in path or "?" in path or "#" in path:
             raise BridgeProtocolError("Invalid Bridge endpoint path.")
         try:

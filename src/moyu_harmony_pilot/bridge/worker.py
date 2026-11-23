@@ -11,8 +11,10 @@ import random
 import signal
 import threading
 import time
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ActionOutcome, ActionRegistry, ActionRunner
@@ -47,7 +49,7 @@ def worker_directory(config: BridgeConfig) -> Path:
     return config.state_dir / "bridge" / namespace
 
 
-def health_status(config: BridgeConfig) -> dict:
+def health_status(config: BridgeConfig) -> dict[str, Any]:
     try:
         payload = json.loads((worker_directory(config) / "health.json").read_text())
         age = (utc_now() - parse_time(payload["heartbeat_at"])).total_seconds()
@@ -74,7 +76,7 @@ class BridgeWorker:
         *,
         client: JsonTransport | None = None,
         registry: ActionRegistry | None = None,
-        env=None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.registry_override = registry
@@ -105,10 +107,10 @@ class BridgeWorker:
         self.last_heartbeat = float("-inf")
         self.has_pending_jobs = False
         self._heartbeat_lock = threading.Lock()
-        self.inventory: list[dict] = []
+        self.inventory: list[dict[str, Any]] = []
         self.counts = {"claimed": 0, "completed": 0, "recovered": 0, "errors": 0}
 
-    def _inventory(self, *, telemetry: bool = True) -> list[dict]:
+    def _inventory(self, *, telemetry: bool = True) -> list[dict[str, Any]]:
         try:
             targets = {
                 target.serial: target
@@ -121,7 +123,7 @@ class BridgeWorker:
         for alias, device in self.devices.items():
             target = targets.get(device.profile.serial)
             state = target.connection_state if target else ConnectionState.OFFLINE
-            row = {
+            row: dict[str, str | int | float | bool | list[str] | None] = {
                 "deviceAlias": alias,
                 "connectionState": state.value,
                 "osFamily": "harmonyos-next",
@@ -207,6 +209,7 @@ class BridgeWorker:
 
     def flush_receipts(self) -> None:
         for job_id, payload in self.store.pending():
+            accepted = True
             try:
                 reply = self.client.post(f"/bridge/v1/jobs/{job_id}/complete", payload)
                 if (
@@ -218,9 +221,12 @@ class BridgeWorker:
             except BridgeError as exc:
                 if exc.status not in {409, 410}:
                     raise
-            self.store.acknowledge(job_id)
+                accepted = False
+            self.store.acknowledge(job_id, accepted=accepted)
 
-    def _receipt(self, job: Job, outcome: ActionOutcome, started: str, duration: float) -> dict:
+    def _receipt(
+        self, job: Job, outcome: ActionOutcome, started: str, duration: float,
+    ) -> dict[str, Any]:
         result = outcome.to_dict()
         secrets = [
             self.config.token,
@@ -300,7 +306,7 @@ class BridgeWorker:
         )
         self.counts["completed"] += 1
 
-    def _cycle(self) -> dict:
+    def _cycle(self) -> dict[str, int]:
         self.counts["recovered"] += self.store.recover()
         self.flush_receipts()
         if self.stop.is_set():
@@ -349,11 +355,11 @@ class BridgeWorker:
             self.has_pending_jobs = False
         return dict(self.counts)
 
-    def run_once(self) -> dict:
+    def run_once(self) -> dict[str, int]:
         with self.lock, self._signals():
             return self._cycle()
 
-    def probe(self) -> dict:
+    def probe(self) -> dict[str, Any]:
         """Publish read-only inventory without claiming jobs or changing saved receipts."""
         with self.lock:
             self.inventory = self._inventory()
@@ -365,7 +371,7 @@ class BridgeWorker:
                 "devices": self.inventory,
             }
 
-    def run(self) -> dict:
+    def run(self) -> dict[str, int]:
         failures = 0
         with self.lock, self._signals():
             while not self.stop.is_set():
@@ -396,7 +402,7 @@ class BridgeWorker:
         return dict(self.counts)
 
     @contextmanager
-    def _signals(self):
+    def _signals(self) -> Iterator[None]:
         previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
         try:
             for signum in previous:

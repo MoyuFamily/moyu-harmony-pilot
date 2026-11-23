@@ -7,24 +7,40 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
+from types import FrameType
+from typing import TYPE_CHECKING, Never
 
-from moyu_harmony_pilot.actions import ActionOutcome, ActionRunner
+from moyu_harmony_pilot.actions import ActionOutcome, ActionRegistry, ActionRunner
 from moyu_harmony_pilot.actions.models import ActionBudgetExceeded
-from moyu_harmony_pilot.bridge.config import validate_configuration
+from moyu_harmony_pilot.bridge.config import BridgeConfig, validate_configuration
 from moyu_harmony_pilot.bridge.lease import LeaseKeeper
 from moyu_harmony_pilot.bridge.protocol import Job, timestamp, utc_now
 from moyu_harmony_pilot.device import DeviceBusyError, DeviceConfigurationError, HarmonyDevice
+from moyu_harmony_pilot.hdc import HdcClient
+
+if TYPE_CHECKING:
+    from moyu_harmony_pilot.bridge.worker import BridgeWorker
 
 
-def _run_action(config, hdc, registry, environment, job, channel, cancelled, parent_pid):
+def _run_action(
+    config: BridgeConfig,
+    hdc: HdcClient,
+    registry: ActionRegistry | None,
+    environment: Mapping[str, str],
+    job: Job,
+    channel: Connection,
+    cancelled: Event,
+    parent_pid: int,
+) -> None:
     """Each child owns its main-thread deadline timer and closes its result channel."""
 
-    def interrupt(signum, frame):
+    def interrupt(signum: int, frame: FrameType | None) -> Never:
         raise ActionBudgetExceeded
 
     signal.signal(signal.SIGTERM, interrupt)
@@ -73,9 +89,9 @@ class ExecutionSlot:
     outcome: ActionOutcome | None = None
 
 
-def execute_batch(worker, jobs) -> None:
+def execute_batch(worker: BridgeWorker, jobs: Sequence[Job]) -> None:
     context = multiprocessing.get_context("spawn")
-    slots = []
+    slots: list[ExecutionSlot] = []
     try:
         for job in jobs:
             if not worker.store.reserve(job):
@@ -164,7 +180,7 @@ def execute_batch(worker, jobs) -> None:
             if slots:
                 time.sleep(0.02)
     finally:
-        cleanup_error = None
+        cleanup_error: Exception | None = None
         for slot in slots:
             slot.cancelled.set()
             try:
@@ -175,7 +191,7 @@ def execute_batch(worker, jobs) -> None:
             raise cleanup_error
 
 
-def finish_slot(worker, slot: ExecutionSlot) -> None:
+def finish_slot(worker: BridgeWorker, slot: ExecutionSlot) -> None:
     slot.process.join(timeout=0.2)
     if slot.process.is_alive():
         slot.process.terminate()

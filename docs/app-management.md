@@ -8,17 +8,28 @@
 harmony-pilot apps list --device harmony-01 --json
 harmony-pilot apps info --device harmony-01 --bundle com.example.demo --json
 harmony-pilot apps install --device harmony-01 --hap ./entry.hap --idempotency-key demo-v1 --json
+harmony-pilot apps install --device harmony-01 --package ./release.app --idempotency-key release-v1 --json
 harmony-pilot apps uninstall --device harmony-01 --bundle com.example.demo --idempotency-key remove-v1 --json
 ```
 
-重复传入 `--hap` 可安装同一应用、同一版本的多个 HAP。覆盖更新使用同一安装命令，每次独立部署使用新的幂等键。包内 `module.json` 必须包含 `app.bundleName` 和整数 `app.versionCode`。系统负责检查签名、调试权限和安装策略，Pilot 验证工具成功回执以及安装后的应用版本。
+`--package` 接受本地 `.hap`、应用内 `.hsp` 和鸿蒙 `.app` 分发包，扩展名大小写均可。原有 `--hap` 参数继续可用，也接受这些格式。重复传参可组合部署同一应用、同一版本的多个模块。覆盖更新使用同一安装命令，每次独立部署使用新的幂等键。系统负责检查签名、调试权限和安装策略，Pilot 验证工具成功回执以及安装后的应用版本。
+
+Pilot 在主机的私有临时目录中展开 `.app` 以验证 `pack.info` 中的应用标识与全部 HAP/HSP 的 `module.json` 一致。安装单个 `.app` 时，API 22+ 设备收到完整的原始 APP 文件，保留外层签名字节；较早 API 设备收到展开后的模块。组合输入多个包时沿用一次提交 HAP/HSP 模块组的方式。单次安装最多 32 个模块，APP 模块总展开大小上限为 512 MiB。路径穿越、符号链接、重复成员及损坏的包会被拒绝，临时文件在成功或异常退出后清理。
+
+幂等参数记录原始 `.app` 文件路径和 SHA-256，提交前复制并复核原文件。安装中断后的只读对账可继续使用原请求参数。多设备类型、CPU 架构或重复模块的具体适配仍由系统安装器校验。
+
+应用市场上架包可以对外层 APP 签名，由市场验证后拆包并对 HAP 签名。设备侧安装会检查内部 HAP/HSP 的签名，系统返回 `9568320 / no signature file` 时应检查具体模块。构建工程中设置 `packOptions.appWithSignedPkg=true` 可额外生成内部模块已签名的 `*-all-signed.app`，也可使用同次构建的已签名 HAP。
+
+签名是否受目标设备接受由系统安装器校验。在商用 HarmonyOS NEXT 真机上通过 `hdc` 侧载时，`app_gallery` 分发类型的 `release` 签名包会因非信任安装源被拒绝（`9568322`），未包含当前设备 UDID 的 `debug` 签名包会因设备未授权被拒绝（`9568423`）；真机直装需使用包含目标设备 UDID 授权的调试/内测签名或受设备信任的企业签名。提交失败后保持 `unknown` 防重记录，先只读查询安装状态。同一请求通过幂等键阻止重放，新的已授权部署单独记录。
 
 ```bash
 harmony-pilot apps download --url https://packages.example.org/entry.hap --out ./entry.hap --json
 harmony-pilot apps install --device harmony-01 --url https://packages.example.org/entry.hap --idempotency-key deploy-v1 --json
+harmony-pilot apps download --url https://packages.example.org/release.app --out ./release.app --json
+harmony-pilot apps install --device harmony-01 --url https://packages.example.org/release.app --idempotency-key deploy-app-v1 --json
 ```
 
-支持 HTTP(S) 下载，`--sha256` 可提供预期文件摘要。下载有大小上限和超时检查，通过校验后原子替换目标文件。URL 安装缓存位于状态目录的 `packages/` 下。安装会将文件复制到私有临时目录，再次验证摘要后提交。
+支持 HTTP(S) 下载，`--sha256` 可提供原始下载文件的预期摘要。下载有大小上限和超时检查，通过结构与摘要校验后原子替换目标文件。URL 安装缓存位于状态目录的 `packages/` 下，按 URL 路径的 `.app` / `.hsp` 扩展名识别格式，其他路径沿用 `.hap`。下载接口没有格式扩展名时，可先用 `apps download --out ./release.app` 指定保存格式，再从本地安装。Python 提供 `download_package()` 和 `package_metadata()` 通用入口，原有 `download_hap()` 与 `hap_metadata()` 可继续使用。
 
 `app.install`、`app.uninstall` 使用现有 `ActionRunner`、设备锁、过温门控和 SQLite 幂等账本。当前两项动作设为本地执行，CLI 同时提供 `plugins describe` 参数契约。宿主机文件路径和下载地址由本地部署方管理。
 
@@ -38,10 +49,11 @@ harmony-pilot ledger reconcile --device harmony-01 --action app.install --idempo
 
 ```bash
 harmony-pilot ledger resolve --device harmony-01 --action app.install --idempotency-key deploy-v1 --params-json '<原始 data.params JSON>' --note '已人工确认应用构建与运行结果' --json
+harmony-pilot ledger release --device harmony-01 --action app.install --idempotency-key deploy-v1 --params-json '<原始 data.params JSON>' --note '已人工确认未产生副作用，释放重试' --json
 harmony-pilot ledger prune --older-than-days 90 --json
 ```
 
-`resolve` 记录成功核验和备注，并继续保留幂等键。`prune` 只清理已成功结案的历史，保留 `submitting` 和 `unknown`。裁剪后的历史幂等键将失去防重记录，应按业务防重期限设置保留天数。账本 v1 会在事务中自动迁移，保留原有记录。
+`resolve` 记录成功核验和备注，并继续保留幂等键。`release` 仅面向本机人工操作，在持物理设备锁并核对原请求参数与插件版本后，释放 `submitting` / `unknown` 预留并向 `resolutions` 表写入不可变 `released` 审计记录，允许随后复用原幂等键重试；已确认 `succeeded` / `already_done` 的记录不可释放。`prune` 只清理已成功结案的历史，保留 `submitting` 和 `unknown`。裁剪后的历史幂等键将失去防重记录，应按业务防重期限设置保留天数。账本 v1 会在事务中自动迁移，保留原有记录。
 
 ## 本地 Agent 交互
 
@@ -76,6 +88,12 @@ harmony-pilot report --input ./saved-result.json --out .state/diagnostics/run.ht
 
 ## 验证范围
 
-新增离线测试覆盖 HAP 安装与卸载、防重复提交、安装已生效但回执超时、相同版本更新不确定、下载校验和原子替换、旧账本迁移、中文及特殊字符参数转义、等待预算和过滤透传、并发子进程重叠执行、单子进程崩溃与超时、HTML 转义和文件权限。
+新增离线测试覆盖 HAP/APP 安装、内含 HSP 的多模块展开、卸载、防重复提交、安装已生效但回执超时、相同版本更新不确定、下载校验和原子替换、异常包拒绝与临时目录清理、旧账本迁移、中文及特殊字符参数转义、等待预算和过滤透传、并发子进程重叠执行、单子进程崩溃与超时、HTML 转义和文件权限。
 
-2026 年 11 月 20 日本次只读设备枚举触发 `hdc_timeout`。新安装链路、中文实际输入效果、HarmonyOS 5.x / 6.x 多版本及断线重连真机验收仍待完成。解析器测试采用合成数据，已有 HarmonyOS 6.1 脱敏布局继续参与回归。
+2026 年 11 月 20 日在允许访问本机 hdc 服务的运行环境中，HarmonyOS 6.1 / API 23 真机通过设备枚举、健康检查、布局和截屏验证。应用查询补充了实测出现的 `ID: 100:` 用户分组列表格式，离线回归使用合成包名覆盖该格式与旧格式。
+
+本次真实 `.app` 通过主机解析、展开和字节一致性核验。文件结构检查发现外层 APP 有签名块，内层 HAP 未发现对应签名块。先前展开 HAP 的提交和后续 API 23 完整 APP 的原生提交均返回 `9568320 / no signature file`，两次请求分别保留 `unknown` 记录。只读复查确认应用未安装，相关受管临时文件已清理。外层签名块检查仅确认结构，签名的密码学有效性尚未验证。
+
+2026 年 11 月 21 日补充对两份已签名 `.hap` 样本执行了官方 `hap-sign-tool` 离线密码学验签（`verify-app` 与 `verify-profile` 均通过，包含 `Hap Signing Block v3`、代码签名与 SHA-256 摘要校验）及真机安装验证。`release / app_gallery` 签名样本在真机 `hdc` 通道返回 `9568322 / signature verification failed due to not trusted app source`；绑定其他设备 UDID 的 `debug` 签名样本经离线比对确认不包含本机 UDID，真机安装返回 `9568423 / device is unauthorized`。经 `harmony-pilot apps install` 提交后均保留 `unknown` 防重记录，复用同一 `--idempotency-key` 重放时直接阻断未重复提交；只读 `apps info` 确认未安装，宿主机与设备侧临时文件均无残留。
+
+受商用 HarmonyOS NEXT 侧载签名策略限制，成功安装及覆盖更新真机验收需使用已授权当前设备 UDID 的调试签名包或受信任企业签名包；该项与中文实际输入效果、更多 HarmonyOS 5.x / 6.x 版本及断线重连真机验收仍待完成。

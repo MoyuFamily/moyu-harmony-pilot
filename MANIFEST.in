@@ -13,4 +13,15 @@ recursive-include examples/plugin-template/src *.py
 recursive-include examples/plugin-template/tests *.py
 recursive-include deploy *.service *.plist
 recursive-include tests *.py *.json
+prune .state
+prune artifacts
+prune diagnostics
+prune plugins_local
+prune .venv
+prune venv
+prune ENV
+global-exclude **/.state/** **/artifacts/** **/diagnostics/** **/plugins_local/** **/.venv/** **/venv/** **/ENV/**
+global-exclude devices.local.yaml devices.local.json devices.local.yml bridge.local.* bridge-token.local
+global-exclude .env .env.* *.sqlite3 *.sqlite3-journal *.sqlite3-wal *.sqlite3-shm *.tmp *.log
 global-exclude *.pyc *.pyo .DS_Store
+include .env.example

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, fields
+from typing import Any
 
 from moyu_harmony_pilot.ui.errors import UiInvalidInputError
 from moyu_harmony_pilot.ui.models import UiNode, UiTree
@@ -81,12 +82,12 @@ class UiSelector:
         return True
 
 
-def selector_from_dict(value: dict, *, depth: int = 0) -> UiSelector:
+def selector_from_dict(value: dict[str, Any], *, depth: int = 0) -> UiSelector:
     """Validate external selector objects before constructing recursive queries."""
     names = {field.name for field in fields(UiSelector)}
     if not isinstance(value, dict) or value.keys() - names or depth > 4:
         raise UiInvalidInputError("Invalid or excessively nested selector.")
-    converted = {}
+    converted: dict[str, Any] = {}
     booleans = {"clickable", "long_clickable", "scrollable", "enabled", "visible",
                 "checked", "selected", "focused"}
     for key, item in value.items():

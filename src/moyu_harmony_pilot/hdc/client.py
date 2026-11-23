@@ -313,12 +313,18 @@ class HdcClient:
     def install(
         self, target: str, packages: Sequence[str | Path], *, timeout: float = 120.0
     ) -> None:
-        """Install/update one or more local HAPs using the official host command."""
+        """Submit local HAP/HSP files, or APPs with API 22+ official tooling.
+
+        HarmonyDevice expands APPs on the host for older supported device APIs.
+        """
         if isinstance(packages, (str, bytes, Path)) or not 1 <= len(packages) <= 32:
-            raise HdcInvalidArgumentError("Provide between 1 and 32 HAP paths.")
+            raise HdcInvalidArgumentError("Provide between 1 and 32 package paths.")
         paths = [Path(package).expanduser().resolve() for package in packages]
-        if any(path.suffix.lower() != ".hap" or not path.is_file() for path in paths):
-            raise HdcInvalidArgumentError("Every package must be an existing HAP file.")
+        if any(
+            path.suffix.lower() not in {".hap", ".hsp", ".app"} or not path.is_file()
+            for path in paths
+        ):
+            raise HdcInvalidArgumentError("Every package must be an existing HAP/HSP/APP file.")
         self._package_command(
             target, ["install", *(str(path) for path in paths)], "install", timeout
         )

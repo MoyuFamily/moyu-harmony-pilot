@@ -7,7 +7,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Never
 from urllib.parse import urlsplit
 
 from moyu_harmony_pilot.actions.validation import json_copy
@@ -110,18 +110,18 @@ def broker_url(value: Any) -> str:
 
 
 def decode_object(raw: bytes) -> dict[str, Any]:
-    def pairs(items):
-        result = {}
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
         for key, value in items:
             if key in result:
                 raise ValueError
             result[key] = value
         return result
 
-    def invalid_constant(value):
+    def invalid_constant(value: str) -> Never:
         raise ValueError
 
-    def finite_float(value):
+    def finite_float(value: str) -> float:
         parsed = float(value)
         if not math.isfinite(parsed):
             raise ValueError
@@ -149,7 +149,7 @@ class Job:
     device_alias: str
     action: str
     idempotency_key: str = field(repr=False)
-    params: dict = field(repr=False)
+    params: dict[str, Any] = field(repr=False)
     timeout_seconds: float
     lease_token: str = field(repr=False)
     lease_expires_at: datetime

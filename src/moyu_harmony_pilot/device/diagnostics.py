@@ -116,11 +116,10 @@ def resize_image_max_width(path: str | Path, max_width: int) -> tuple[int | None
         return (width, height, False)
 
     try:
-        from PIL import Image  # type: ignore[import-not-found]
+        from PIL import Image
     except ImportError:
-        Image = None
-
-    if Image is not None:
+        pass
+    else:
         with Image.open(img_path) as img:
             orig_w, orig_h = img.size
             if orig_w <= max_width:
@@ -145,8 +144,8 @@ def resize_image_max_width(path: str | Path, max_width: int) -> tuple[int | None
                 f"Failed to resize screenshot via macOS sips: {proc.stderr.strip()}"
             )
         enforce_file_mode_0600(img_path)
-        new_w, new_h = read_image_dimensions(img_path)
-        return (new_w, new_h, True)
+        sips_width, sips_height = read_image_dimensions(img_path)
+        return (sips_width, sips_height, True)
 
     raise DeviceConfigurationError(
         "Resizing screenshots with --max-width requires Pillow (`pip install pillow`) on this OS.",

@@ -11,6 +11,7 @@ from moyu_harmony_pilot.vision.ocr import (
     MacOSVisionOcrEngine,
     RapidOcrEngine,
     create_ocr_engine,
+    detect_ocr_backend,
 )
 from moyu_harmony_pilot.vision.som import Mark, annotate_som, require_pillow
 from moyu_harmony_pilot.vision.watcher import PopupRule, PopupWatcher
@@ -27,6 +28,7 @@ __all__ = [
     "VisionUnavailableError",
     "annotate_som",
     "create_ocr_engine",
+    "detect_ocr_backend",
     "find_text",
     "require_pillow",
 ]

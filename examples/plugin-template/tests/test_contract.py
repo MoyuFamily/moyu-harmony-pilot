@@ -2,6 +2,7 @@
 
 from moyu_harmony_pilot.actions import ACTION_API_VERSION, ActionRegistry, ActionRunner
 from moyu_harmony_pilot.device import DeviceConfigurationError
+from moyu_harmony_pilot.testing import assert_readonly
 
 from tests.support import OfflineTestCase
 
@@ -24,27 +25,30 @@ class BatteryContractTests(OfflineTestCase):
         self.assertTrue(description["remote_allowed"])
         for params in description["examples"]:
             self.runner.prepare(ACTION_ID, params, remote=True)
-        self.assertEqual(self.device.calls, [])
+        self.assertEqual(description["min_pilot_version"], "0.2.0rc1")
+        self.assertEqual(self.transport.calls, [])
 
     def test_readonly_execution_and_bounded_receipts(self):
         for battery, ready in ((72, True), (10, False), (None, False)):
             with self.subTest(battery=battery):
-                self.device.battery_percent = battery
-                self.device.calls.clear()
-                outcome = self.runner.run(
+                self.device_state.battery_percent = battery
+                self.transport.calls.clear()
+                outcome = assert_readonly(self.transport, lambda: self.runner.run(
                     self.device, ACTION_ID, {"minimum_battery": 20}, remote=True,
-                )
+                ))
                 self.assertEqual(outcome.status, "succeeded" if ready else "failed")
                 self.assertEqual(outcome.metrics, {"battery_percent": battery, "ready": ready})
-                self.assertEqual(self.device.calls, ["lock", "thermal", "health", "unlock"])
+                self.assertTrue(self.transport.calls)
+                self.assertTrue(all(timeout > 0 for _, _, timeout in self.transport.calls))
                 self.assertFalse((self.state_dir / "actions.sqlite3").exists())
-                self.assertFalse(self.device.value)
+                with self.device.acquire_lock():
+                    pass
 
     def test_invalid_params_fail_before_device_access(self):
         for params in ({}, {"minimum_battery": True}, {"minimum_battery": 101}, {"extra": 1}):
             with self.subTest(params=params), self.assertRaises(DeviceConfigurationError):
                 self.runner.run(self.device, ACTION_ID, params, remote=True)
-        self.assertEqual(self.device.calls, [])
+        self.assertEqual(self.transport.calls, [])
 
     def test_remote_execution_requires_allowlist(self):
         registry = ActionRegistry.discover(remote=True, plugin_paths=[])
@@ -52,4 +56,4 @@ class BatteryContractTests(OfflineTestCase):
             ActionRunner(registry, state_dir=self.state_dir).run(
                 self.device, ACTION_ID, {"minimum_battery": 20}, remote=True,
             )
-        self.assertEqual(self.device.calls, [])
+        self.assertEqual(self.transport.calls, [])
