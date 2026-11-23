@@ -177,6 +177,17 @@ jobs:
       - name: Verify uploaded release assets
         shell: bash
         run: |
+          gh release view "$RELEASE_TAG" --json assets > release-assets.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = sorted(path.name for path in Path("dist").iterdir())
+          release = json.loads(Path("release-assets.json").read_text(encoding="utf-8"))
+          actual = sorted(asset["name"] for asset in release["assets"])
+          if actual != expected:
+              raise SystemExit("Release assets must exactly match this build's file list.")
+          PY
           gh release download "$RELEASE_TAG" --dir downloaded \
             --pattern '*.whl' --pattern '*.tar.gz' --pattern SHA256SUMS
           cmp dist/SHA256SUMS downloaded/SHA256SUMS

@@ -35,10 +35,46 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
     )
     for name in files:
         shutil.copy2(root / name, source / name)
+    private_directories = (
+        ".state", "artifacts", "diagnostics", "plugins_local", ".venv", "venv", "ENV",
+    )
+    private_files = (
+        "devices.local.yaml", "devices.local.json", "devices.local.yml",
+        "bridge.local.json", "bridge.local.yaml", "bridge-token.local",
+        ".env", ".env.production", "actions.sqlite3", "actions.sqlite3-journal",
+        "actions.sqlite3-wal", "actions.sqlite3-shm", "capture.tmp", "capture.log",
+    )
+    ignored_paths = shutil.ignore_patterns(
+        "__pycache__", "*.egg-info", *private_directories,
+        "devices.local.yaml", "devices.local.json", "devices.local.yml",
+        "bridge.local.*", "bridge-token.local", ".env", ".env.*",
+        "*.sqlite3", "*.sqlite3-journal", "*.sqlite3-wal", "*.sqlite3-shm", "*.tmp", "*.log",
+    )
+
+    def ignore_private_paths(directory: str, names: list[str]) -> set[str]:
+        return ignored_paths(directory, names) - {".env.example"}
+
     for name in ("src", "tests", "docs", "skills", "examples", "deploy"):
-        shutil.copytree(
-            root / name, source / name, ignore=shutil.ignore_patterns("__pycache__", "*.egg-info")
-        )
+        shutil.copytree(root / name, source / name, ignore=ignore_private_paths)
+
+    # Exercise real archive contents using synthetic data only, including nested paths.
+    private_marker = f"synthetic-private-{tmp_path.name}"
+    private_content = json.dumps({"private": private_marker}).encode("utf-8")
+    private_paths: set[str] = set()
+    for parent in (
+        ".", "examples/bridge", "examples/plugin-template", "tests", "src/moyu_harmony_pilot",
+    ):
+        for name in private_files:
+            private_paths.add((Path(parent) / name).as_posix())
+        for directory in private_directories:
+            for name in ("private.py", "nested/layout.json", ".env.example"):
+                private_paths.add((Path(parent) / directory / name).as_posix())
+    for name in sorted(private_paths):
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(private_content)
+    (source / ".env.example").write_text("SYNTHETIC_SETTING=public-example\n", encoding="utf-8")
+
     artifacts = tmp_path / "artifacts"
     result = subprocess.run(  # noqa: S603
         [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(artifacts)],
@@ -93,6 +129,13 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
         }
         assert required <= names
         assert not any(".state/" in name or "devices.local." in name for name in names)
+        assert names.isdisjoint(private_paths), sorted(names & private_paths)
+        assert ".env.example" in names
+        for member in archive.getmembers():
+            if member.isfile():
+                stream = archive.extractfile(member)
+                assert stream is not None
+                assert private_marker.encode("utf-8") not in stream.read(), member.name
         metadata_path = next(
             name for name in archive.getnames()
             if name.count("/") == 1 and name.endswith("/PKG-INFO")
@@ -105,6 +148,8 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
         assert sdist_metadata["Requires-Python"] == project["requires-python"]
     with zipfile.ZipFile(next(artifacts.glob("*.whl"))) as archive:
         names = archive.namelist()
+        for name in names:
+            assert private_marker.encode("utf-8") not in archive.read(name), name
         assert "moyu_harmony_pilot/mcp/server.py" in names
         assert archive.read("moyu_harmony_pilot/py.typed") == b""
         assert any(

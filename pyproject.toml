@@ -50,6 +50,7 @@ harmony-pilot-mcp = "moyu_harmony_pilot.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 
 [tool.setuptools.package-data]
 moyu_harmony_pilot = ["py.typed"]
