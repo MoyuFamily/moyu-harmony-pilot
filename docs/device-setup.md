@@ -79,14 +79,14 @@ cd moyu-harmony-pilot
 uv venv --python python3.11 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 
-# 校验基础工具链
-.venv/bin/python -m compileall -q src tests
-.venv/bin/ruff check src tests
-.venv/bin/pytest
+# 校验 CLI 入口与基础包
 .venv/bin/harmony-pilot --version
+.venv/bin/python -m pytest -q -x tests/test_package.py
 ```
 
 （若未安装 `uv`，也可使用 `python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"`。）
+
+日常开发的验证范围、执行次数和时间预算遵循 [AGENTS.md](../AGENTS.md)。完整测试套件由 CI 或明确要求的全量/发布验收任务执行。
 
 ---
 

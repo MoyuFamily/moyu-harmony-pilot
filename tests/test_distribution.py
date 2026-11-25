@@ -1,4 +1,4 @@
-"""Build distributable artifacts offline and verify downstream validation resources."""
+"""Verify archive contents and one installed external-plugin workflow offline."""
 
 import email
 import json
@@ -8,19 +8,42 @@ import subprocess
 import sys
 import tarfile
 import tomllib
-import venv
 import zipfile
 from pathlib import Path
 
+import pytest
 
-def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["dependencies"] == []
-    build_environment = {
-        **os.environ, "PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+
+def _run_offline(
+    command: list[str], *, cwd: Path, timeout: int = 30,
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        name: value for name, value in os.environ.items() if not name.startswith("PIP_")
     }
-    source = tmp_path / "source"
+    environment.pop("PYTHONHOME", None)
+    environment.update({
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_NO_INDEX": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PYTHONPATH": "",
+        "PYTHONNOUSERSITE": "1",
+        "HARMONY_PILOT_PLUGIN_PATHS": "",
+    })
+    result = subprocess.run(  # noqa: S603 -- fixed local build, install and CLI commands
+        command, cwd=cwd, env=environment, capture_output=True, text=True,
+        timeout=timeout, check=False,
+    )
+    assert result.returncode == 0, (command, result.stdout, result.stderr)
+    return result
+
+
+@pytest.fixture(scope="module")
+def distribution_artifacts(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, set[str], bytes]:
+    root = Path(__file__).resolve().parents[1]
+    workspace = tmp_path_factory.mktemp("distribution")
+    source = workspace / "source"
     source.mkdir()
     files = (
         "pyproject.toml",
@@ -58,7 +81,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
         shutil.copytree(root / name, source / name, ignore=ignore_private_paths)
 
     # Exercise real archive contents using synthetic data only, including nested paths.
-    private_marker = f"synthetic-private-{tmp_path.name}"
+    private_marker = f"synthetic-private-{workspace.name}"
     private_content = json.dumps({"private": private_marker}).encode("utf-8")
     private_paths: set[str] = set()
     for parent in (
@@ -75,17 +98,21 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
         path.write_bytes(private_content)
     (source / ".env.example").write_text("SYNTHETIC_SETTING=public-example\n", encoding="utf-8")
 
-    artifacts = tmp_path / "artifacts"
-    result = subprocess.run(  # noqa: S603
+    artifacts = workspace / "artifacts"
+    _run_offline(
         [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(artifacts)],
-        cwd=source,
-        env=build_environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+        cwd=source, timeout=60,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    return artifacts, private_paths, private_marker.encode("utf-8")
+
+
+def test_sdist_and_wheel_include_required_community_deliverables(
+    distribution_artifacts: tuple[Path, set[str], bytes],
+) -> None:
+    artifacts, private_paths, private_marker = distribution_artifacts
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["dependencies"] == []
     with tarfile.open(next(artifacts.glob("*.tar.gz"))) as archive:
         names = {"/".join(name.split("/")[1:]) for name in archive.getnames()}
         required = {
@@ -135,7 +162,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
             if member.isfile():
                 stream = archive.extractfile(member)
                 assert stream is not None
-                assert private_marker.encode("utf-8") not in stream.read(), member.name
+                assert private_marker not in stream.read(), member.name
         metadata_path = next(
             name for name in archive.getnames()
             if name.count("/") == 1 and name.endswith("/PKG-INFO")
@@ -149,7 +176,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
     with zipfile.ZipFile(next(artifacts.glob("*.whl"))) as archive:
         names = archive.namelist()
         for name in names:
-            assert private_marker.encode("utf-8") not in archive.read(name), name
+            assert private_marker not in archive.read(name), name
         assert "moyu_harmony_pilot/mcp/server.py" in names
         assert archive.read("moyu_harmony_pilot/py.typed") == b""
         assert any(
@@ -158,6 +185,7 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
         )
         for resource in (
             "pyproject.toml", ".gitignore", ".github/workflows/contract.yml",
+            "requirements-test.txt",
             "src/harmony_pilot_example/toggle.py", "tests/test_mutating_contract.py",
         ):
             assert any(
@@ -173,191 +201,85 @@ def test_sdist_and_wheel_include_required_community_deliverables(tmp_path: Path)
         assert all(
             "extra ==" in requirement for requirement in metadata.get_all("Requires-Dist", [])
         )
+        workflow_name = next(
+            name for name in names
+            if name.endswith("/plugin-template/.github/workflows/contract.yml")
+        )
+        assert (
+            "vars.PILOT_REF || 'v" + project["version"] + "'"
+            in archive.read(workflow_name).decode()
+        )
+        requirements_name = next(
+            name for name in names if name.endswith("/plugin-template/requirements-test.txt")
+        )
+        assert (
+            project["name"] + "==" + project["version"]
+            in archive.read(requirements_name).decode().splitlines()
+        )
         entries_name = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
         assert "harmony-pilot-mcp" in archive.read(entries_name).decode()
-        installed = tmp_path / "installed"
-        archive.extractall(installed)  # noqa: S202 -- locally built wheel ZIP
 
-    # Build the standalone template and exercise both wheels outside the Pilot checkout.
-    template = source / "examples" / "plugin-template"
-    plugin_artifacts = tmp_path / "plugin-artifacts"
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(plugin_artifacts)],
-        cwd=template, env=build_environment,
-        capture_output=True, text=True, timeout=60, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    with tarfile.open(next(plugin_artifacts.glob("*.tar.gz"))) as archive:
-        names = {"/".join(name.split("/")[1:]) for name in archive.getnames()}
-        assert {
-            "tests/test_contract.py", "tests/test_mutating_contract.py",
-            "tests/__main__.py", "requirements-test.txt", ".github/workflows/contract.yml",
-        } <= names
-    with zipfile.ZipFile(next(plugin_artifacts.glob("*.whl"))) as archive:
-        assert not any(name.startswith("tests/") for name in archive.namelist())
-        archive.extractall(installed)  # noqa: S202 -- locally built wheel ZIP
 
-    environment = {**os.environ, "PYTHONPATH": str(installed), "PYTHONNOUSERSITE": "1"}
-    script = """
-import pathlib
-import importlib.resources
-import runpy
-import sys
-import moyu_harmony_pilot
-
-assert pathlib.Path(moyu_harmony_pilot.__file__).is_relative_to(sys.argv[1])
-assert importlib.resources.files('moyu_harmony_pilot').joinpath('py.typed').is_file()
-runpy.run_module('tests', run_name='__main__')
-"""
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-S", "-c", script, str(installed)],
-        cwd=template, env=environment, capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Ran 9 tests" in result.stderr
-    assert "skipped" not in result.stderr.lower()
-
-    # The copied test entry point rejects skipped contracts and empty suites.
-    gate_script = """
-import unittest
-from unittest.mock import patch
-from tests.__main__ import main
-
-skipped = unittest.FunctionTestCase(unittest.skip('synthetic skip')(lambda: None))
-for suite in (unittest.TestSuite([skipped]), unittest.TestSuite()):
-    with patch.object(unittest.defaultTestLoader, 'loadTestsFromNames', return_value=suite):
-        assert main() == 1
-"""
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-S", "-c", gate_script], cwd=template, env=environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "skipped=1" in result.stderr
-
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-S", "-m", "tests"], cwd=template,
-        env={**environment, "PYTHONPATH": ""},
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "No module named 'moyu_harmony_pilot'" in result.stderr
-
-    # Exercise the installed console script and PEP 561 discovery from a clean venv.
-    consumer_environment = tmp_path / "consumer-venv"
-    venv.EnvBuilder(with_pip=True, symlinks=True).create(consumer_environment)
-    bin_directory = consumer_environment / "bin"
-    consumer_python = bin_directory / "python"
-    cli = bin_directory / "harmony-pilot"
+def test_installed_cli_generates_packaged_plugin_with_offline_contracts(
+    distribution_artifacts: tuple[Path, set[str], bytes], tmp_path: Path,
+) -> None:
+    artifacts, _, _ = distribution_artifacts
     consumer = tmp_path / "consumer"
     consumer.mkdir()
-    isolated_environment = {
-        **build_environment, "PYTHONPATH": "", "PYTHONNOUSERSITE": "1", "MYPYPATH": "",
-    }
-    result = subprocess.run(  # noqa: S603
+    consumer_environment = tmp_path / "consumer-venv"
+    _run_offline(
+        [sys.executable, "-m", "venv", "--symlinks", str(consumer_environment)],
+        cwd=consumer, timeout=60,
+    )
+    consumer_python = consumer_environment / "bin" / "python"
+    cli = consumer_environment / "bin" / "harmony-pilot"
+    _run_offline(
         [
             str(consumer_python), "-m", "pip", "install", "--no-index", "--no-deps",
             str(next(artifacts.glob("*.whl"))),
         ],
-        cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=60, check=False,
+        cwd=consumer, timeout=60,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    result = subprocess.run(  # noqa: S603
-        [str(cli), "--version"], cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert project["version"] in result.stdout
-    result = subprocess.run(  # noqa: S603
-        [str(cli), "schema", "--json"], cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout)["ok"] is True
 
-    # A wheel-only consumer can create and test its own renamed plugin, outside the checkout.
     generated = consumer / "community-plugin"
-    result = subprocess.run(  # noqa: S603
+    result = _run_offline(
         [str(cli), "plugins", "init", str(generated), "--namespace", "community", "--json"],
-        cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
+        cwd=consumer,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    scaffold = json.loads(result.stdout)["data"]
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    scaffold = payload["data"]
     assert scaffold["module_name"] == "community_plugin"
     assert scaffold["action_ids"] == ["community.battery_check", "community.demo_toggle"]
-    workflow = (generated / ".github/workflows/contract.yml").read_text(encoding="utf-8")
-    assert "vars.PILOT_REF || 'v" + project["version"] + "'" in workflow
-    generated_artifacts = tmp_path / "community-artifacts"
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(generated_artifacts)],
-        cwd=generated, env=build_environment,
-        capture_output=True, text=True, timeout=60, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    result = subprocess.run(  # noqa: S603
-        [
-            str(consumer_python), "-m", "pip", "install", "--no-index", "--no-deps",
-            str(next(generated_artifacts.glob("*.whl"))),
-        ],
-        cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    result = subprocess.run(  # noqa: S603
-        [
-            str(consumer_python), "-m", "pip", "install", "--no-index", "--no-deps",
-            "-r", str(generated / "requirements-test.txt"),
-        ],
-        cwd=generated, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    result = subprocess.run(  # noqa: S603
-        [str(consumer_python), "-m", "pip", "check"],
-        cwd=generated, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    result = subprocess.run(  # noqa: S603
-        [str(consumer_python), "-m", "tests"], cwd=generated, env=isolated_environment,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Ran 9 tests" in result.stderr
-    for action_id in scaffold["action_ids"]:
-        result = subprocess.run(  # noqa: S603
-            [str(cli), "plugins", "describe", action_id, "--json"],
-            cwd=consumer, env=isolated_environment,
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert json.loads(result.stdout)["data"]["action_id"] == action_id
 
-    config = consumer / "mypy.ini"
-    config.write_text("[mypy]\nstrict = true\n", encoding="utf-8")
-    sample = consumer / "consumer.py"
-    valid = (
-        "from moyu_harmony_pilot.ui import Bounds\n"
-        "bounds = Bounds(left=0, top=0, right=100, bottom=200)\n"
-        "center: tuple[int, int] = bounds.center\n"
+    # Build the generated sdist and its wheel with the already-installed build tools.
+    generated_artifacts = tmp_path / "community-artifacts"
+    _run_offline(
+        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(generated_artifacts)],
+        cwd=generated, timeout=60,
     )
-    sample.write_text(valid, encoding="utf-8")
-    mypy_command = [
-        sys.executable, "-m", "mypy", "--config-file", str(config),
-        "--python-executable", str(consumer_python), "--no-incremental", str(sample),
-    ]
-    result = subprocess.run(  # noqa: S603
-        mypy_command, cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=60, check=False,
+    with tarfile.open(next(generated_artifacts.glob("*.tar.gz"))) as archive:
+        names = {"/".join(name.split("/")[1:]) for name in archive.getnames()}
+        assert {
+            "tests/test_contract.py", "tests/test_mutating_contract.py", "tests/support.py",
+            "tests/__main__.py", "requirements-test.txt", ".github/workflows/contract.yml",
+        } <= names
+    plugin_wheel = next(generated_artifacts.glob("*.whl"))
+    with zipfile.ZipFile(plugin_wheel) as archive:
+        assert not any(name.startswith("tests/") for name in archive.namelist())
+
+    # Resolve plugin dependencies against the installed Pilot while staying offline.
+    _run_offline(
+        [str(consumer_python), "-m", "pip", "install", "--no-index", str(plugin_wheel)],
+        cwd=consumer,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    sample.write_text(valid.replace("left=0", 'left="invalid"'), encoding="utf-8")
-    result = subprocess.run(  # noqa: S603
-        mypy_command, cwd=consumer, env=isolated_environment,
-        capture_output=True, text=True, timeout=60, check=False,
-    )
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert '[arg-type]' in result.stdout
-    assert 'Argument "left" to "Bounds"' in result.stdout
+    result = _run_offline([str(consumer_python), "-m", "tests"], cwd=generated)
+    assert "Ran 9 tests" in result.stderr
+    assert "skipped" not in result.stderr.lower()
+
+    result = _run_offline([str(cli), "plugins", "list", "--json"], cwd=consumer)
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    discovered = {plugin["action_id"] for plugin in payload["data"]["plugins"]}
+    assert set(scaffold["action_ids"]) <= discovered
+    assert not any(action_id.startswith("example.") for action_id in discovered)

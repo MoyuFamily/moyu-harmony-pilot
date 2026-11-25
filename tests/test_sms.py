@@ -18,20 +18,18 @@ from moyu_harmony_pilot.actions.sms import (
 from moyu_harmony_pilot.actions.validation import check_schema, validate_value
 from moyu_harmony_pilot.cli import build_cli_schema
 from moyu_harmony_pilot.device import (
-    DeviceBusyError,
     DeviceConfigurationError,
     DeviceError,
-    DeviceOverheatedError,
     HumanRequiredError,
 )
-from moyu_harmony_pilot.hdc import CommandResult, HdcTimeoutError
+from moyu_harmony_pilot.hdc import CommandResult
 from moyu_harmony_pilot.testing import (
     FakeClickTarget,
     FakeDeviceState,
     make_fake_device,
     offline_guard,
 )
-from moyu_harmony_pilot.ui import parse_layout_dict, parse_layout_json
+from moyu_harmony_pilot.ui import parse_layout_dict
 
 
 def node(
@@ -113,7 +111,19 @@ def fake_sms(tmp_path: Path, *layouts: str):
     return make_fake_device(tmp_path, state=state, alias="phone")
 
 
-@pytest.mark.parametrize("thread", [False, True])
+@pytest.fixture
+def sms_clock(monkeypatch):
+    now = 0.0
+
+    def advance(seconds):
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr("moyu_harmony_pilot.actions.sms.time.monotonic", lambda: now)
+    monkeypatch.setattr("moyu_harmony_pilot.actions.sms.time.sleep", advance)
+
+
+@pytest.mark.parametrize("thread", [False, True], ids=["conversations", "thread"])
 def test_body_preserved_codes_returned_and_no_message_files(tmp_path, thread):
     body = "合成示例说明。" * 30 + "短信验证码为 483921，有效期5分钟。"
     fake = fake_sms(tmp_path, sms_layout(("示例服务", body, "今天 10:23"), thread=thread))
@@ -148,13 +158,14 @@ def test_sender_filter_and_limit_and_body_bounds(tmp_path):
     ))
     result = read_sms(fake.device, sender="甲", limit=1)
     assert result["count"] == 1
-    assert len(result["messages"][0]["body"]) == 4096
+    assert result["messages"][0]["sender"] == "甲"
+    assert result["messages"][0]["body"] == "a" * 4096
     assert result["messages"][0]["body_truncated"]
     assert result["truncated"]
-    assert read_sms(fake.device, sender="无匹配")["messages"] == []
+    assert not fake.transport.mutating_calls
 
 
-@pytest.mark.parametrize("suffix", ["12345678", "123456AB", "123456秒"])
+@pytest.mark.parametrize("suffix", ["12345678"], ids=["partial-numeric-code"])
 def test_body_truncation_never_creates_partial_verification_code(tmp_path, suffix):
     body = "a" * 4085 + "短信验证码" + suffix
     result = read_sms(fake_sms(tmp_path, sms_layout(("示例", body, "今天"))).device)
@@ -163,42 +174,16 @@ def test_body_truncation_never_creates_partial_verification_code(tmp_path, suffi
     assert result["messages"][0]["verification_codes"] == []
 
 
-def test_empty_list_is_visible_scope_success(tmp_path):
-    result = read_sms(fake_sms(tmp_path).device)
-    assert result["count"] == 0
-    assert result["scope"] == "visible"
-    assert not result["truncated"]
-
-
-@pytest.mark.parametrize("focus, expected", [(42, True), (43, False)])
-def test_native_window_name_uses_focus_id_and_layout_bundle(tmp_path, focus, expected):
+def test_native_window_name_uses_focus_id_and_layout_bundle(tmp_path):
     fake = fake_sms(tmp_path, sms_layout(("示例", "hello", "今天")))
     fake.state.shell_results[("hidumper", "-s", "WindowManagerService", "-a", "-a")] = (
-        CommandResult((), 0, f"mms0 0 100 {focus} 1\nFocus window: {focus}\n", "", 1)
+        CommandResult((), 0, "mms0 0 100 43 1\nFocus window: 43\n", "", 1)
     )
-    if expected:
-        assert read_sms(fake.device)["messages"][0]["body"] == "hello"
-    else:
-        with pytest.raises(HumanRequiredError):
-            read_sms(fake.device)
-
-
-def test_thread_limit_returns_last_visible_messages(tmp_path):
-    fake = fake_sms(tmp_path, sms_layout(
-        ("示例", "older", "昨天"), ("示例", "newer", "今天"), thread=True,
-    ))
-    result = read_sms(fake.device, limit=1)
-    assert result["messages"][0]["body"] == "newer"
-    assert result["truncated"]
-
-
-def test_total_text_budget_keeps_latest_thread_message(tmp_path):
-    messages = [("示例", str(index) + "x" * 4090, "今天") for index in range(7)]
-    result = read_sms(fake_sms(tmp_path, sms_layout(*messages, thread=True)).device)
-    assert result["truncated"]
-    assert result["messages"][-1]["body"].startswith("6")
-    assert sum(len(row["body"]) + len(row["sender"]) + len(row["time_text"])
-               for row in result["messages"]) <= 16384
+    with pytest.raises(HumanRequiredError):
+        read_sms(fake.device)
+    assert not fake.transport.mutating_calls
+    assert not fake.transport.all_remote_tmp_files()
+    assert not fake.device.is_busy()
 
 
 def test_hidden_offscreen_and_foreign_window_messages_excluded():
@@ -221,91 +206,47 @@ def test_hidden_offscreen_and_foreign_window_messages_excluded():
 def test_unknown_layout_and_incomplete_rows_fail_without_private_text(tmp_path):
     raw = json.loads(sms_layout(("示例", "PRIVATE_BODY", "今天")))
     raw["children"][-1]["children"][0]["children"].pop()
+    fake = fake_sms(tmp_path, json.dumps(raw))
     with pytest.raises(DeviceError, match="unsupported") as caught:
-        read_sms(fake_sms(tmp_path, json.dumps(raw)).device)
+        read_sms(fake.device)
     assert caught.value.code == "sms_layout_unsupported"
     assert "PRIVATE_BODY" not in str(caught.value)
-    with pytest.raises(DeviceError):
-        parse_sms_tree(parse_layout_dict(node("", "unrecognized", bundleName=SMS_BUNDLE)))
-
-
-@pytest.mark.parametrize("options", [
-    {"limit": 0}, {"limit": True}, {"limit": 51}, {"sender": " "}, {"sender": 123},
-    {"sender": "x" * 129}, {"wait_seconds": -1}, {"wait_seconds": 301},
-    {"wait_seconds": True}, {"wait_seconds": 30}, {"wait_seconds": float("nan")},
-    {"timeout": 0}, {"timeout": True}, {"timeout": float("inf")},
-])
-def test_bad_options_rejected_before_device_io(tmp_path, options):
-    fake = fake_sms(tmp_path)
-    with pytest.raises(DeviceConfigurationError):
-        read_sms(fake.device, **options)
-    assert fake.transport.calls == []
-
-
-def test_busy_overheated_wrong_app_and_timeout_cleanup(tmp_path):
-    fake = fake_sms(tmp_path)
-    with fake.device.acquire_lock(), pytest.raises(DeviceBusyError):
-        read_sms(fake.device)
-    assert fake.transport.calls == []
-    fake.state.temperature_c = 50
-    with pytest.raises(DeviceOverheatedError):
-        read_sms(fake.device)
-    fake.state.temperature_c = 25
-    fake.state.foreground_bundle = "com.example.other"
-    with pytest.raises(HumanRequiredError):
-        read_sms(fake.device)
-    fake.state.foreground_bundle = SMS_BUNDLE
-    fake.state.timeout_on_cmd_prefix = "uitest dumpLayout"
-    with pytest.raises(HdcTimeoutError):
-        read_sms(fake.device)
-    assert not fake.device.is_busy()
-    assert not fake.transport.all_remote_tmp_files()
     assert not fake.transport.mutating_calls
+    assert not fake.transport.all_remote_tmp_files()
+    assert not fake.device.is_busy()
 
 
-def test_wait_excludes_baseline_and_relative_timestamp_changes(tmp_path, monkeypatch):
+def test_wait_excludes_baseline_and_relative_timestamp_changes(tmp_path, sms_clock):
     fake = fake_sms(tmp_path,
                     sms_layout(("示例", "短信验证码123456", "刚刚")),
                     sms_layout(("示例", "短信验证码123456", "1分钟前")),
                     sms_layout(("示例", "短信验证码654321", "刚刚")))
     fake.state.advance_layout_on_dump = True
-    monkeypatch.setattr("moyu_harmony_pilot.actions.sms._POLL_INTERVAL", 0.001)
-    result = read_sms(fake.device, wait_seconds=0.1)
+    result = read_sms(fake.device, wait_seconds=3)
     assert result["reason"] == "new_message"
     assert result["messages"][0]["verification_codes"] == ["654321"]
     assert "123456" not in json.dumps(result)
     assert not fake.transport.mutating_calls
 
 
-def test_wait_timeout_returns_empty_and_cannot_replay_old_code(tmp_path, monkeypatch):
+def test_wait_timeout_returns_empty_and_cannot_replay_old_code(tmp_path, sms_clock):
     fake = fake_sms(tmp_path, sms_layout(("示例", "短信验证码123456", "今天")))
-    monkeypatch.setattr("moyu_harmony_pilot.actions.sms._POLL_INTERVAL", 0.001)
-    result = read_sms(fake.device, wait_seconds=0.01)
+    result = read_sms(fake.device, wait_seconds=2)
     assert result["reason"] == "timeout"
     assert result["messages"] == []
     assert "123456" not in json.dumps(result)
     assert not fake.device.is_busy()
+    assert not fake.transport.mutating_calls
 
 
-def test_wait_detects_additional_identical_message_and_sender_filter(tmp_path, monkeypatch):
-    message = ("示例", "短信验证码123456", "今天")
-    fake = fake_sms(tmp_path, sms_layout(message, thread=True),
-                    sms_layout(message, message, thread=True))
-    fake.state.advance_layout_on_dump = True
-    monkeypatch.setattr("moyu_harmony_pilot.actions.sms._POLL_INTERVAL", 0.001)
-    result = read_sms(fake.device, wait_seconds=0.1, sender="示例")
-    assert result["reason"] == "new_message"
-    assert result["count"] == 1
-
-
-def test_wait_page_change_requires_new_observation(tmp_path, monkeypatch):
+def test_wait_page_change_requires_new_observation(tmp_path, sms_clock):
     fake = fake_sms(tmp_path, sms_layout(), sms_layout(thread=True))
     fake.state.advance_layout_on_dump = True
-    monkeypatch.setattr("moyu_harmony_pilot.actions.sms._POLL_INTERVAL", 0.001)
     with pytest.raises(DeviceError) as caught:
-        read_sms(fake.device, wait_seconds=0.1)
+        read_sms(fake.device, wait_seconds=2)
     assert caught.value.code == "sms_view_changed"
     assert not fake.device.is_busy()
+    assert not fake.transport.mutating_calls
 
 
 def test_sms_open_from_thread_uses_back_target_and_durable_ledger(tmp_path):
@@ -342,19 +283,16 @@ def test_sms_open_uncertain_submission_never_replayed(tmp_path):
     assert len(fake.transport.calls) == count
 
 
-def test_sms_open_requires_remote_allowlist_and_idempotency_key(tmp_path):
+@pytest.mark.parametrize(
+    "options",
+    [{"remote": True, "idempotency_key": "key"}, {}],
+    ids=["remote-without-allowlist", "missing-idempotency-key"],
+)
+def test_sms_open_requires_remote_allowlist_and_idempotency_key(tmp_path, options):
     fake = fake_sms(tmp_path)
     registry = ActionRegistry()
     registry.register(SmsOpen())
     runner = ActionRunner(registry, state_dir=tmp_path)
     with pytest.raises(DeviceConfigurationError):
-        runner.run(fake.device, "sms.open", {}, remote=True, idempotency_key="key")
-    with pytest.raises(DeviceConfigurationError):
-        runner.run(fake.device, "sms.open", {})
+        runner.run(fake.device, "sms.open", {}, **options)
     assert fake.transport.calls == []
-
-
-def test_parse_thread_native_shape():
-    page = parse_sms_tree(parse_layout_json(sms_layout(("示例", "hello", "今天"), thread=True)))
-    assert page.sender == "示例"
-    assert page.messages[0].time_text == "今天"

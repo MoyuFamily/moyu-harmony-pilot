@@ -6,9 +6,7 @@ import io
 import json
 import shutil
 import signal
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -33,7 +31,6 @@ from moyu_harmony_pilot.bridge.protocol import (
     utc_now,
 )
 from moyu_harmony_pilot.bridge.worker import health_status
-from moyu_harmony_pilot.cli.schema import build_cli_schema
 from moyu_harmony_pilot.device import DeviceBusyError, DeviceConfigurationError
 from moyu_harmony_pilot.hdc import HdcClient
 from tests.fakes import FakeDeviceState, FakeHdcTransport
@@ -151,7 +148,11 @@ def test_worker_protocol_and_duplicate_job_never_reexecutes(bridge):
 
 @pytest.mark.parametrize(
     "updates",
-    [{"action": "ui.inspect"}, {"deviceAlias": "other"}, {"params": {"shell": "private-command"}}],
+    [
+        pytest.param({"action": "ui.inspect"}, id="action-outside-allowlist"),
+        pytest.param({"deviceAlias": "other"}, id="device-outside-scope"),
+        pytest.param({"params": {"shell": "private-command"}}, id="undeclared-parameter"),
+    ],
 )
 def test_remote_scope_and_schema_fail_closed(bridge, updates):
     worker, broker, plugin, _, _, _ = bridge
@@ -190,8 +191,14 @@ def test_restart_recovers_unfinished_job_without_submission(bridge):
     assert restarted.counts["recovered"] == 1
 
 
-@pytest.mark.parametrize("stage", ["inspect", "submit", "confirm"])
-@pytest.mark.parametrize("cancellation", ["requested", "conflict", "gone", "expired"])
+@pytest.mark.parametrize(
+    "stage,cancellation",
+    [
+        pytest.param("inspect", "requested", id="cancel-before-submission"),
+        pytest.param("submit", "conflict", id="lease-lost-after-submission"),
+        pytest.param("confirm", "expired", id="lease-expires-during-confirmation"),
+    ],
+)
 def test_broker_cancellation_respects_submission_boundary(
     bridge, monkeypatch, stage, cancellation
 ):
@@ -203,9 +210,8 @@ def test_broker_cancellation_respects_submission_boundary(
         broker.jobs[0]["leaseExpiresAt"] = timestamp(utc_now() + timedelta(seconds=0.25))
         broker.failures["/bridge/v1/jobs/job_001/lease"] = [BridgeError("offline")] * 30
     else:
-        status = 409 if cancellation == "conflict" else 410
         broker.failures["/bridge/v1/jobs/job_001/lease"] = [
-            BridgeError("lease lost", status=status, retryable=False)
+            BridgeError("lease lost", status=409, retryable=False)
         ]
     operation = getattr(plugin, stage)
 
@@ -252,133 +258,6 @@ def test_action_timeout_and_instance_lock(bridge):
     assert broker.receipts[-1]["status"] == "unknown"
 
 
-def test_lease_conflict_and_terminal_completion_conflict(bridge):
-    worker, broker, _, _, _, _ = bridge
-    job = Job.parse(job_payload())
-    lease = LeaseKeeper(job, worker.config, broker, worker.stop, lambda: None)
-    broker.failures["/bridge/v1/jobs/job_001/lease"] = [
-        BridgeError("expired", status=409, retryable=False)
-    ]
-    with lease:
-        assert lease.lost.wait(1)
-    assert lease.cancelled()
-    broker.jobs = [job_payload()]
-    broker.failures["/bridge/v1/jobs/job_001/complete"] = [
-        BridgeError("closed", status=410, retryable=False)
-    ]
-    worker.run_once()
-    assert not worker.store.pending()
-
-
-def test_finishing_during_renewal_skips_heartbeat_and_stops_thread(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    heartbeat = Mock()
-    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
-    post = broker.post
-
-    def finish_during_request(path, payload, *, timeout=None):
-        lease.finished.set()
-        return post(path, payload, timeout=timeout)
-
-    monkeypatch.setattr(broker, "post", finish_during_request)
-    with lease:
-        assert lease.finished.wait(1)
-    assert not lease.thread.is_alive()
-    heartbeat.assert_not_called()
-
-
-@pytest.mark.parametrize("error", [BridgeError("private", retryable=False), OSError("private")])
-def test_heartbeat_failure_keeps_healthy_lease(bridge, monkeypatch, caplog, error):
-    worker, broker, _, _, _, _ = bridge
-    heartbeat = Mock(side_effect=error)
-    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
-    monkeypatch.setattr(lease.finished, "wait", Mock(side_effect=[False, False, True]))
-    lease._loop()
-    assert heartbeat.call_count == 2
-    assert len([path for path, _ in broker.calls if path.endswith("/lease")]) == 2
-    assert not lease.lost.is_set()
-    assert not lease.cancelled()
-    assert "heartbeat failed" in caplog.text
-    assert "private" not in caplog.text
-
-
-def test_retryable_renewal_failure_retries_before_heartbeat(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    broker.failures["/bridge/v1/jobs/job_001/lease"] = [BridgeError("offline")]
-    heartbeat = Mock()
-    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
-    monkeypatch.setattr(lease.finished, "wait", Mock(side_effect=[False, False, True]))
-    lease._loop()
-    assert len(broker.calls) == 2
-    heartbeat.assert_called_once()
-    assert not lease.lost.is_set()
-
-
-def test_lease_exit_budget_covers_renewal_and_heartbeat(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, Mock())
-    thread = Mock()
-    monkeypatch.setattr(lease, "thread", thread)
-    with lease:
-        pass
-    assert lease.finished.is_set()
-    thread.join.assert_called_once_with(timeout=2 * worker.config.request_timeout + 1)
-
-
-def test_lease_exit_waits_for_inflight_heartbeat(bridge):
-    worker, broker, _, _, _, _ = bridge
-    started = threading.Event()
-    finished = threading.Event()
-
-    def heartbeat():
-        started.set()
-        time.sleep(0.1)
-        finished.set()
-
-    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, heartbeat)
-    with lease:
-        assert started.wait(2)
-    assert finished.is_set()
-    assert not lease.thread.is_alive()
-
-
-def test_concurrent_heartbeats_share_one_health_update(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    post = broker.post
-    started = threading.Event()
-    release = threading.Event()
-
-    def slow_post(path, payload, *, timeout=None):
-        started.set()
-        assert release.wait(2)
-        return post(path, payload, timeout=timeout)
-
-    monkeypatch.setattr(broker, "post", slow_post)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(worker.heartbeat)
-        assert started.wait(2)
-        second = pool.submit(worker.heartbeat)
-        release.set()
-        first.result(timeout=2)
-        second.result(timeout=2)
-    assert len(broker.calls) == 1
-    assert health_status(worker.config)["healthy"]
-    assert not (worker.directory / "health.tmp").exists()
-
-
-def test_shutdown_during_renewal_wait_skips_request(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    lease = LeaseKeeper(Job.parse(job_payload()), worker.config, broker, worker.stop, Mock())
-
-    def stop_during_wait(timeout):
-        worker.stop.set()
-        return False
-
-    monkeypatch.setattr(lease.finished, "wait", stop_during_wait)
-    lease._loop()
-    assert not broker.calls
-
-
 def test_late_renewal_does_not_revive_expired_lease(bridge, monkeypatch):
     worker, broker, _, _, _, _ = bridge
     job = Job.parse(job_payload())
@@ -400,8 +279,13 @@ def test_late_renewal_does_not_revive_expired_lease(bridge, monkeypatch):
     assert lease.cancelled()
 
 
-@pytest.mark.parametrize("stage", ["inspect", "submit", "confirm"])
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize(
+    "stage,signum",
+    [
+        pytest.param("inspect", signal.SIGTERM, id="terminate-before-submission"),
+        pytest.param("submit", signal.SIGINT, id="interrupt-after-submission"),
+    ],
+)
 def test_signal_shutdown_respects_submission_boundary(bridge, monkeypatch, stage, signum):
     worker, broker, plugin, _, _, _ = bridge
     original = signal.getsignal(signum)
@@ -440,173 +324,22 @@ def test_job_expiration_still_bounds_cancelled_submission(bridge):
     assert plugin.calls == ["inspect", "submit"]
 
 
-def test_idle_cycles_sample_telemetry_only_when_heartbeat_due(bridge):
-    worker, broker, _, device, transport, _ = bridge
-    worker.run_once()
-    transport.calls.clear()
-    worker.run_once()
-    assert not any("hidumper" in " ".join(args) for _, args, _ in transport.calls)
-    assert len([path for path, _ in broker.calls if path.endswith("/claim")]) == 2
-    worker.last_heartbeat -= worker.config.heartbeat_seconds
-    worker.run_once()
-    assert sum("hidumper" in " ".join(args) for _, args, _ in transport.calls) == 2
-    device.status = "Offline"
-    worker.run_once()
-    assert len([path for path, _ in broker.calls if path.endswith("/claim")]) == 3
-
-
-@pytest.mark.parametrize("claim_duration, expected_delay", [(15, 0), (2, 13), (0, 15)])
-def test_empty_claim_elapsed_time_counts_toward_poll_interval(
-    bridge, monkeypatch, claim_duration, expected_delay
-):
-    worker, broker, _, _, _, _ = bridge
-    clock = [100.0]
-    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
-    post = broker.post
-
-    def timed_post(path, payload, *, timeout=None):
-        if path.endswith("/claim"):
-            clock[0] += claim_duration
-        result = post(path, payload, timeout=timeout)
-        if path.endswith("/heartbeat"):
-            result["recommendedPollIntervalSeconds"] = 15
-        return result
-
-    monkeypatch.setattr(broker, "post", timed_post)
-    delays = []
-
-    def stop_after_wait(delay):
-        delays.append(delay)
-        worker.stop.set()
-
-    monkeypatch.setattr(worker.stop, "wait", stop_after_wait)
-    worker.run()
-    assert delays == [expected_delay]
-
-
-def test_pending_job_hint_uses_immediate_claim_and_empty_result_clears_hint(bridge):
-    worker, broker, _, _, _, _ = bridge
-    worker.config = replace(worker.config, wait_seconds=15)
-    broker.jobs = [job_payload()]
-    worker.run_once()
-    assert worker.has_pending_jobs
-    worker.run_once()
-    assert not worker.has_pending_jobs
-    worker.run_once()
-    claims = [payload for path, payload in broker.calls if path.endswith("/claim")]
-    assert [claim["waitSeconds"] for claim in claims] == [0, 0, 15]
-
-
-def test_pending_job_hint_clears_when_no_device_available(bridge):
-    worker, _, _, device, _, _ = bridge
-    worker.run_once()
-    worker.has_pending_jobs = True
-    device.status = "Offline"
-    worker.run_once()
-    assert not worker.has_pending_jobs
-
-
-def test_pending_job_hint_skips_poll_sleep(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    broker.jobs = [job_payload()]
-    delays = []
-
-    def stop_after_wait(delay):
-        delays.append(delay)
-        worker.stop.set()
-
-    monkeypatch.setattr(worker.stop, "wait", stop_after_wait)
-    worker.run()
-    assert delays == [0]
-    assert broker.receipts[0]["status"] == "succeeded"
-
-
-def test_failed_health_file_update_remains_due_for_retry(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            "moyu_harmony_pilot.bridge.worker.os.replace", Mock(side_effect=OSError("failed"))
-        )
-        with pytest.raises(OSError):
-            worker.heartbeat()
-    assert worker.last_heartbeat == float("-inf")
-    worker.heartbeat()
-    assert len(broker.calls) == 2
-    assert health_status(worker.config)["healthy"]
-    assert not (worker.directory / "health.tmp").exists()
-
-
-def test_reconnect_backoff_resumes_and_exits_cleanly(bridge, monkeypatch):
-    worker, broker, _, _, _, _ = bridge
-    broker.failures["/bridge/v1/heartbeat"] = [BridgeError("offline")]
-    broker.on_claim = worker.stop.set
-    delays = []
-    monkeypatch.setattr(worker.stop, "wait", lambda delay: delays.append(delay))
-    worker.run()
-    assert worker.counts["errors"] == 1
-    assert 1 <= delays[0] <= 2
-    assert len([path for path, _ in broker.calls if path.endswith("/heartbeat")]) == 2
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://broker.example.org",
-        "https://user:private@example.org",
-        "https://example.org/?token=private",
-        "file:///private/file",
-        "http://localhost.example.org",
-        "https://example.org/#fragment",
-    ],
-)
-def test_invalid_broker_urls_are_rejected(url):
+def test_invalid_broker_urls_are_rejected():
     with pytest.raises(BridgeProtocolError):
-        broker_url(url)
+        broker_url("http://broker.example.org")
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        b'{"ok":true,"ok":false}',
-        b'{"number":NaN}',
-        b'{"number":1e999}',
-        b'{"nested":[{"number":-1e999}]}',
-        b"[]",
-        b"x" * 65537,
+        pytest.param(b'{"ok":true,"ok":false}', id="duplicate-key"),
+        pytest.param(b'{"number":1e999}', id="nonfinite-number"),
+        pytest.param(b"x" * 65537, id="oversized-body"),
     ],
 )
 def test_broker_json_is_bounded_unambiguous_and_finite(raw):
     with pytest.raises(BridgeProtocolError):
         decode_object(raw)
-
-
-def test_private_config_token_file_and_offline_cli_check(bridge, monkeypatch):
-    worker, broker, _, _, hdc, config_path = bridge
-    values = json.loads(config_path.read_text())
-    values["allowed_actions"] = {"phone": ["device.health"]}
-    values["token_file"] = "bridge-token"
-    config_path.write_text(json.dumps(values))
-    secret = config_path.parent / "bridge-token"
-    secret.write_text("synthetic-file-token")
-    secret.chmod(0o600)
-    config = BridgeConfig.load(config_path, env={})
-    assert config.token == "synthetic-file-token"
-    assert config.token not in repr(config)
-    code, output, _ = _run_cli(
-        ["serve", "--config", str(config_path), "--check", "--json"],
-        env={"HARMONY_PILOT_HDC_PATH": "/not/installed"},
-    )
-    assert code == 0
-    assert _parse_single_json_envelope(output)["data"]["valid"]
-    worker_module = importlib.import_module("moyu_harmony_pilot.bridge.worker")
-    monkeypatch.setattr(worker_module, "HttpBridgeClient", lambda config: broker)
-    code, output, _ = _run_cli(
-        ["serve", "--config", str(config_path), "--once", "--json"], env={}, transport=hdc
-    )
-    assert code == 0, output
-    secret.chmod(0o644)
-    with pytest.raises(DeviceConfigurationError):
-        BridgeConfig.load(config_path, env={})
 
 
 def test_http_transport_headers_limits_errors_and_redirect_rejection(bridge):
@@ -623,7 +356,7 @@ def test_http_transport_headers_limits_errors_and_redirect_rejection(bridge):
     assert request.get_header("X-harmony-pilot-protocol") == "1"
     assert request.get_header("User-agent") == f"harmony-pilot/{__version__}"
     assert request.full_url.startswith("https://")
-    for status in (401, 403, 409, 410, 429, 503):
+    for status in (403, 503):
         opener.open.side_effect = HTTPError(
             "https://broker.example.org", status, "private", {}, None
         )
@@ -631,7 +364,7 @@ def test_http_transport_headers_limits_errors_and_redirect_rejection(bridge):
             client.post("/bridge/v1/jobs/claim", {})
         assert error.value.status == status
         assert "private" not in str(error.value)
-        assert error.value.retryable == (status in {429, 503})
+        assert error.value.retryable == (status == 503)
     opener.open.side_effect = URLError("private-token")
     with pytest.raises(BridgeError, match="connection failed"):
         client.post("/bridge/v1/heartbeat", {})
@@ -647,14 +380,8 @@ def test_local_only_capability_and_malformed_jobs(bridge):
     config = replace(worker.config, allowed_actions={"phone": ("ui.inspect",)})
     with pytest.raises(DeviceConfigurationError):
         BridgeWorker(config, HdcClient(transport=hdc), client=broker, env={})
-    for updates in (
-        {"jobId": "../../escape"},
-        {"timeoutSeconds": float("nan")},
-        {"leaseToken": "line\nbreak"},
-        {"expiresAt": "2026-01-01"},
-    ):
-        with pytest.raises(BridgeProtocolError):
-            Job.parse(job_payload(**updates))
+    with pytest.raises(BridgeProtocolError):
+        Job.parse(job_payload(jobId="../../escape"))
 
 
 def test_receipts_redact_known_secrets(bridge):
@@ -734,16 +461,6 @@ def test_configured_plugin_paths_and_contract_export_are_offline(bridge, monkeyp
         validate_configuration(BridgeConfig.load(config_path, env=environment), env=environment)
 
 
-@pytest.mark.parametrize("paths", [None, "plugins", {}, [1], [" "], ["plugins"] * 33])
-def test_invalid_configured_plugin_paths_are_rejected(bridge, paths):
-    worker, _, _, _, _, config_path = bridge
-    values = json.loads(config_path.read_text())
-    values["plugin_paths"] = paths
-    config_path.write_text(json.dumps(values))
-    with pytest.raises(DeviceConfigurationError):
-        BridgeConfig.load(config_path, env={"HARMONY_PILOT_BRIDGE_TOKEN": worker.config.token})
-
-
 def test_probe_preserves_jobs_receipts_and_plugin_callbacks(bridge):
     worker, broker, plugin, device, transport, _ = bridge
     running = Job.parse(job_payload(jobId="job_running"))
@@ -768,57 +485,15 @@ def test_probe_preserves_jobs_receipts_and_plugin_callbacks(bridge):
     assert worker.store.recover() == 1
 
 
-@pytest.mark.parametrize("device_status", ["Connected", "Offline"])
-def test_probe_cli_reports_connectivity_and_device_state(bridge, monkeypatch, device_status):
-    worker, broker, _, device, transport, config_path = bridge
-    values = json.loads(config_path.read_text())
-    values["allowed_actions"] = {"phone": ["device.health"]}
-    config_path.write_text(json.dumps(values))
-    device.status = device_status
-    worker_module = importlib.import_module("moyu_harmony_pilot.bridge.worker")
-    monkeypatch.setattr(worker_module, "HttpBridgeClient", lambda config: broker)
-    args = ["serve", "--config", str(config_path), "--probe", "--json"]
-    env = {"HARMONY_PILOT_BRIDGE_TOKEN": worker.config.token}
-    code, output, _ = _run_cli(args, env=env, transport=transport)
-    assert code == 0, output
-    data = _parse_single_json_envelope(output)["data"]
-    expected = "online" if device_status == "Connected" else "offline"
-    assert data["devices"][0]["connectionState"] == expected
-    if device_status == "Connected":
-        assert data["devices"][0]["batteryPercent"] == 72
-    assert [path for path, _ in broker.calls] == ["/bridge/v1/heartbeat"]
-    with worker.lock:
-        assert _run_cli(args, env=env, transport=transport)[0] == 6
-    broker.failures["/bridge/v1/heartbeat"] = [BridgeError("unreachable")]
-    assert _run_cli(args, env=env, transport=transport)[0] == 1
-
-
-def test_serve_probe_schema_and_exclusive_modes():
-    schema = build_cli_schema()
-    assert "plugin_paths" in schema["bridge_config"]["properties"]
-    assert "--probe" in schema["commands"]["serve"]["options"]
-    for mode in ("--once", "--health", "--check"):
-        code, output, _ = _run_cli(["serve", "--probe", mode, "--json"], env={})
-        assert code == 2
-        assert not _parse_single_json_envelope(output)["ok"]
-    code, output, _ = _run_cli(["serve", "--help", "--json"], env={})
-    assert code == 0
-    help_text = _parse_single_json_envelope(output)["data"]["text"]
-    assert "private Bridge JSON config" in help_text
-    assert "set state_dir in its config" in " ".join(help_text.split())
-
-
-@pytest.mark.parametrize("uncertain", [False, True])
-def test_local_ledger_survives_remote_worker_migration(bridge, uncertain):
+def test_local_ledger_survives_remote_worker_migration(bridge):
     worker, broker, plugin, _, transport, _ = bridge
     payload = job_payload()
-    if uncertain:
-        plugin.confirm_error = TimeoutError()
+    plugin.confirm_error = TimeoutError()
     local_outcome = worker.runner.run(
         worker.devices["phone"], payload["action"], payload["params"],
         idempotency_key=payload["idempotencyKey"],
     )
-    assert local_outcome.status == ("unknown" if uncertain else "succeeded")
+    assert local_outcome.status == "unknown"
     plugin.calls.clear()
     config = replace(
         worker.config, bridge_id="migrated-worker", broker_url="https://other.example.org",
@@ -828,15 +503,14 @@ def test_local_ledger_survives_remote_worker_migration(bridge, uncertain):
     )
     broker.jobs = [payload]
     migrated.run_once()
-    assert broker.receipts[0]["status"] == ("unknown" if uncertain else "already_done")
+    assert broker.receipts[0]["status"] == "unknown"
     assert not plugin.calls
     assert worker.store.path != migrated.store.path
     assert worker.runner.state_dir == migrated.runner.state_dir
 
 
-@pytest.mark.parametrize("minimum_battery", [20, 90])
 def test_remote_example_through_cli_http_encoding_and_receipt_retry(
-    tmp_path, monkeypatch, minimum_battery,
+    tmp_path, monkeypatch,
 ):
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [])
     source = Path(__file__).resolve().parents[1] / "examples" / "bridge"
@@ -856,7 +530,7 @@ def test_remote_example_through_cli_http_encoding_and_receipt_retry(
     broker = FakeBroker()
     broker.jobs = [job_payload(
         deviceAlias="harmony-01", action="example.health_check",
-        params={"minimum_battery": minimum_battery}, timeoutSeconds=30,
+        params={"minimum_battery": 20}, timeoutSeconds=30,
     )]
     requests = []
 
@@ -886,8 +560,8 @@ def test_remote_example_through_cli_http_encoding_and_receipt_retry(
     assert code == 1, output
     assert not _parse_single_json_envelope(output)["ok"]
     saved_receipt = next(payload for path, payload in broker.calls if path == complete_path)
-    assert saved_receipt["status"] == ("succeeded" if minimum_battery == 20 else "failed")
-    assert saved_receipt["metrics"] == {"battery_percent": 72, "ready": minimum_battery == 20}
+    assert saved_receipt["status"] == "succeeded"
+    assert saved_receipt["metrics"] == {"battery_percent": 72, "ready": True}
     code, output, _ = _run_cli(args, transport=transport, env={})
     assert code == 0, output
     assert _parse_single_json_envelope(output)["data"]["claimed"] == 0

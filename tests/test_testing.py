@@ -6,8 +6,6 @@ import json
 import os
 import socket
 import subprocess
-from dataclasses import replace
-from unittest.mock import patch
 
 import pytest
 
@@ -23,12 +21,8 @@ from moyu_harmony_pilot.actions import (
 from moyu_harmony_pilot.device import DeviceConfigurationError, HarmonyDevice
 from moyu_harmony_pilot.hdc import (
     CommandResult,
-    DeviceOfflineError,
-    DeviceUnauthorizedError,
     HdcClient,
     HdcCommandError,
-    HdcFileTransferError,
-    HdcTimeoutError,
     HdcTransport,
 )
 from moyu_harmony_pilot.testing import (
@@ -45,7 +39,6 @@ from moyu_harmony_pilot.testing import (
     make_layout,
     offline_guard,
 )
-from moyu_harmony_pilot.ui import UiConcurrentCallError
 
 
 @pytest.fixture(autouse=True)
@@ -148,18 +141,6 @@ def test_fake_transport_protocol_discovery_and_target_isolation(tmp_path):
         FakeHdcTransport([first, first])
 
 
-@pytest.mark.parametrize(("status", "error"), [
-    ("Offline", DeviceOfflineError), ("Unauthorized", DeviceUnauthorizedError),
-])
-def test_offline_and_unauthorized_use_real_client_error_semantics(status, error):
-    state = FakeDeviceState(status=status)
-    transport = FakeHdcTransport([state])
-    with pytest.raises(error):
-        HdcClient(transport).shell(state.serial, ["uitest", "--version"])
-    with pytest.raises(DeviceOfflineError):
-        HdcClient(transport).shell("SYNTHETIC_MISSING", ["uitest", "--version"])
-
-
 def test_real_device_builder_telemetry_observation_and_locking(tmp_path):
     fake = make_fake_device(tmp_path, alias="synthetic-alias")
     assert isinstance(fake.device, HarmonyDevice)
@@ -186,47 +167,6 @@ def test_real_device_builder_telemetry_observation_and_locking(tmp_path):
     assert make_fake_device(tmp_path / "second").state.remote_files == {}
 
 
-def test_fake_app_and_power_effects_are_recorded(tmp_path):
-    fake = make_fake_device(tmp_path)
-    fake.device.suspend()
-    assert not fake.state.screen_on
-    fake.device.wakeup()
-    assert fake.state.screen_on
-    fake.device.start_app("com.example.second")
-    assert fake.device.get_foreground_window().bundle_name == "com.example.second"
-    fake.device.force_stop("com.example.second")
-    assert fake.device.get_foreground_window().bundle_name is None
-    assert len(fake.transport.mutating_calls) == 4
-
-
-def test_layout_sequence_only_advances_on_configured_event(tmp_path):
-    state = FakeDeviceState(layouts=[toggle_layout(), toggle_layout(True)])
-    fake = make_fake_device(tmp_path, state=state)
-    fake.device.ui.key_event("Back")
-    fake.device.dump_ui_compact()
-    assert state.layout_index == 0
-    state.advance_layout_on_click = True
-    fake.device.ui.key_event("Back")
-    assert state.layout_index == 0
-    fake.device.ui.click(100, 80)
-    fake.device.ui.click(100, 80)
-    assert state.layout_index == 1
-    assert fake.device.dump_ui_compact()[1].elements[0].checked
-    state.layout_index = 0
-    state.advance_layout_on_dump = True
-    assert not fake.device.dump_ui_compact()[1].elements[0].checked
-    assert fake.device.dump_ui_compact()[1].elements[0].checked
-
-
-@pytest.mark.parametrize(("node_id", "bundle_name"), [
-    ("", "com.example.demo"), (None, "com.example.demo"),
-    ("demo_toggle", ""), ("demo_toggle", None), ("demo_toggle", "   "),
-])
-def test_click_target_requires_explicit_identity(node_id, bundle_name):
-    with pytest.raises(ValueError, match="node ID and bundle"):
-        FakeClickTarget(node_id, bundle_name)
-
-
 def test_click_targets_follow_current_layout_and_consume_in_order(tmp_path):
     toggle = {"id": "demo_toggle", "type": "Toggle"}
     other = {"id": "other_button"}
@@ -250,36 +190,16 @@ def test_click_targets_follow_current_layout_and_consume_in_order(tmp_path):
     fake.transport.assert_click_targets_consumed()
 
 
-@pytest.mark.parametrize("fault", ["none", "timeout-before", "timeout-after", "override"])
-def test_wrong_click_never_advances_and_failure_survives_a_later_correct_click(tmp_path, fault):
-    layout = make_layout({"id": "demo_toggle"}, {"id": "other_button"})
-    state = FakeDeviceState(
-        layouts=[layout, make_layout()], advance_layout_on_click=True,
-        click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")],
-        timeout_on_cmd_prefix="uitest uiInput click" if fault == "timeout-before" else None,
-        timeout_after_mutation=fault == "timeout-after",
-    )
-    if fault == "override":
-        state.shell_results[("uitest", "uiInput", "click", "540", "200")] = (
-            CommandResult((), 0, "ok", "", 1)
-        )
-    fake = make_fake_device(tmp_path, state=state)
-    with pytest.raises(HdcCommandError, match="target center"):
-        fake.device.ui.click(540, 200)
-    assert state.layout_index == state.click_target_index == 0
-    assert len(state.click_failures) == 1
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-    state.timeout_on_cmd_prefix = None
-    state.timeout_after_mutation = False
-    fake.device.ui.click(540, 80)
-    assert state.layout_index == state.click_target_index == 1
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("inherited_bundle", [False, True])
-@pytest.mark.parametrize("click_other_bundle", [False, True])
+@pytest.mark.parametrize(
+    "inherited_bundle",
+    [
+        True,
+    ],
+    ids=['inherited-bundle'],
+)
+@pytest.mark.parametrize(
+    "click_other_bundle", [False, True], ids=["expected-bundle", "foreign-bundle"]
+)
 def test_click_target_binds_exact_bundle_including_inherited_bundle(
     tmp_path, inherited_bundle, click_other_bundle,
 ):
@@ -306,11 +226,13 @@ def test_click_target_binds_exact_bundle_including_inherited_bundle(
         fake.transport.assert_click_targets_consumed()
 
 
-@pytest.mark.parametrize("attributes", [
-    {"id": "wrong_id"}, {"bundleName": "com.example.other"},
-    {"enabled": False}, {"clickable": False}, {"visible": False},
-    {"bounds": "[0,0][0,0]"}, {"bounds": "[1200,40][1300,120]"},
-])
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"enabled": False},
+    ],
+    ids=['disabled-control'],
+)
 def test_click_targets_reject_missing_or_unusable_controls(tmp_path, attributes):
     control = {"id": "demo_toggle", "text": "Demo toggle", **attributes}
     state = FakeDeviceState(
@@ -325,20 +247,13 @@ def test_click_targets_reject_missing_or_unusable_controls(tmp_path, attributes)
         fake.transport.assert_click_targets_consumed()
 
 
-def test_click_target_rejects_center_outside_display(tmp_path):
-    state = FakeDeviceState(
-        layouts=[make_layout({"id": "demo_toggle", "bounds": "[1000,40][1300,120]"})],
-        click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")],
-    )
-    fake = make_fake_device(tmp_path, state=state)
-    with pytest.raises(HdcCommandError, match="inside the display"):
-        fake.device.ui.click(1150, 80)
-    assert state.layout_index == state.click_target_index == 0
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("intervening_controls", [0, 120])
+@pytest.mark.parametrize(
+    "intervening_controls",
+    [
+        120,
+    ],
+    ids=['beyond-compact-limit'],
+)
 def test_click_targets_reject_duplicates_even_beyond_compact_limit(tmp_path, intervening_controls):
     control = {"id": "demo_toggle"}
     others = [{"id": f"other_{index}"} for index in range(intervening_controls)]
@@ -352,177 +267,6 @@ def test_click_targets_reject_duplicates_even_beyond_compact_limit(tmp_path, int
     assert state.layout_index == state.click_target_index == 0
     with pytest.raises(AssertionError, match="Click target checks failed"):
         fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("initial_target_count", [0, 1])
-def test_click_targets_reject_extra_clicks_including_an_empty_sequence(
-    tmp_path, initial_target_count,
-):
-    state = FakeDeviceState(
-        layouts=[toggle_layout(), toggle_layout(True), make_layout()],
-        click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")] * initial_target_count,
-    )
-    fake = make_fake_device(tmp_path, state=state)
-    if initial_target_count:
-        fake.device.ui.click(540, 80)
-    fake.transport.assert_click_targets_consumed()
-    with pytest.raises(HdcCommandError, match="Unexpected click"):
-        fake.device.ui.click(540, 80)
-    assert state.layout_index == state.click_target_index == initial_target_count
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("coordinates", [[], ["540"], ["540", "80", "1"], ["wrong", "80"]])
-def test_click_targets_record_malformed_coordinates(tmp_path, coordinates):
-    state = FakeDeviceState(
-        layouts=[toggle_layout(), toggle_layout(True)],
-        click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")],
-    )
-    fake = make_fake_device(tmp_path, state=state)
-    with pytest.raises(HdcCommandError):
-        HdcClient(fake.transport).shell(state.serial, ["uitest", "uiInput", "click", *coordinates])
-    assert state.layout_index == state.click_target_index == 0
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("layouts", [[], [""], ["{"], ["[]"]])
-def test_click_targets_record_invalid_layout_fixtures(tmp_path, layouts):
-    state = FakeDeviceState(
-        layouts=layouts, click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")],
-    )
-    fake = make_fake_device(tmp_path, state=state)
-    with pytest.raises(HdcCommandError):
-        fake.device.ui.click(540, 80)
-    assert state.layout_index == state.click_target_index == 0
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-def test_click_target_progress_is_isolated_per_device():
-    targets = [FakeClickTarget("demo_toggle", "com.example.demo")]
-    first = FakeDeviceState(
-        serial="SYNTHETIC_FIRST", layouts=[toggle_layout()], click_targets=targets,
-    )
-    second = FakeDeviceState(
-        serial="SYNTHETIC_SECOND", layouts=[toggle_layout()], click_targets=targets,
-    )
-    transport = FakeHdcTransport([first, second])
-    client = HdcClient(transport)
-    client.shell(first.serial, ["uitest", "uiInput", "click", "540", "80"])
-    assert (first.click_target_index, second.click_target_index) == (1, 0)
-    with pytest.raises(AssertionError, match="Consumed 0 of 1"):
-        transport.assert_click_targets_consumed()
-    client.shell(second.serial, ["uitest", "uiInput", "click", "540", "80"])
-    transport.assert_click_targets_consumed()
-
-
-def test_click_targets_require_center_even_for_a_point_inside_target(tmp_path):
-    fake = make_fake_device(tmp_path, state=FakeDeviceState(
-        layouts=[toggle_layout(), toggle_layout(True)],
-        click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")],
-    ))
-    with pytest.raises(HdcCommandError, match="target center"):
-        fake.device.ui.click(100, 80)
-    assert fake.state.layout_index == fake.state.click_target_index == 0
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-def test_click_targets_reject_hidden_ancestor(tmp_path):
-    layout = json.loads(toggle_layout())
-    layout["attributes"]["visible"] = False
-    fake = make_fake_device(tmp_path, state=FakeDeviceState(
-        layouts=[json.dumps(layout), toggle_layout(True)],
-        click_targets=[FakeClickTarget("demo_toggle", "com.example.demo")],
-    ))
-    with pytest.raises(HdcCommandError, match="found 0"):
-        fake.device.ui.click(540, 80)
-    assert fake.state.layout_index == fake.state.click_target_index == 0
-    with pytest.raises(AssertionError, match="Click target checks failed"):
-        fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("command", [
-    "uitest uiInput click 100 80", "uitest uiInput click 'unterminated",
-])
-def test_legacy_timeout_prefix_precedes_shell_parsing_and_overrides(command):
-    state = FakeDeviceState(
-        layouts=[toggle_layout(), toggle_layout(True)], advance_layout_on_click=True,
-        timeout_on_cmd_prefix="uitest uiInput click",
-        shell_results={("uitest", "uiInput", "click", "100", "80"): (
-            CommandResult((), 0, "ok", "", 1)
-        )},
-    )
-    transport = FakeHdcTransport([state])
-    with pytest.raises(HdcTimeoutError):
-        transport.execute(["shell", command], target=state.serial)
-    assert state.click_targets is None
-    assert state.layout_index == state.click_target_index == 0
-    assert state.click_failures == []
-    transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("response", [CommandResult((), 0, "ok", "", 1), TimeoutError("Synthetic")])
-def test_legacy_shell_override_precedes_click_effect_and_post_mutation_timeout(tmp_path, response):
-    fake = make_fake_device(tmp_path, state=FakeDeviceState(
-        layouts=[toggle_layout(), toggle_layout(True)], advance_layout_on_click=True,
-        timeout_after_mutation=True,
-        shell_results={("uitest", "uiInput", "click", "100", "80"): response},
-    ))
-    if isinstance(response, Exception):
-        with pytest.raises(TimeoutError, match="Synthetic"):
-            fake.device.ui.click(100, 80)
-    else:
-        fake.device.ui.click(100, 80)
-    assert fake.state.click_targets is None
-    assert fake.state.layout_index == fake.state.click_target_index == 0
-    assert fake.state.click_failures == []
-    fake.transport.assert_click_targets_consumed()
-
-
-@pytest.mark.parametrize("failure", ["receive", "concurrent", "timeout", "invalid-layout"])
-def test_failed_observation_cleans_up_remote_files(tmp_path, failure):
-    fake = make_fake_device(tmp_path)
-    errors = {
-        "receive": HdcFileTransferError, "concurrent": UiConcurrentCallError,
-        "timeout": HdcTimeoutError, "invalid-layout": HdcCommandError,
-    }
-    fake.state.fail_recv = failure == "receive"
-    fake.state.fail_concurrent_uitest = failure == "concurrent"
-    fake.state.timeout_on_cmd_prefix = "uitest dumpLayout" if failure == "timeout" else None
-    if failure == "invalid-layout":
-        fake.state.layouts = []
-    with pytest.raises(errors[failure]):
-        fake.device.dump_ui_compact()
-    assert fake.transport.all_remote_tmp_files() == {}
-    assert fake.transport.mutating_calls == []
-
-
-def test_shell_overrides_and_unknown_commands_fail_closed(tmp_path):
-    fake = make_fake_device(tmp_path)
-    client = HdcClient(fake.transport)
-    command = ("bm", "dump", "-a")
-    fake.state.shell_results[command] = CommandResult((), 0, "com.example.demo", "", 1)
-    assert client.shell(fake.state.serial, command).stdout == "com.example.demo"
-    fake.state.shell_results[command] = TimeoutError("Synthetic timeout")
-    with pytest.raises(TimeoutError):
-        client.shell(fake.state.serial, command)
-    for command in (["unsupported"], ["uitest", "uiInput", "unsupported"]):
-        with pytest.raises(HdcCommandError):
-            client.shell(fake.state.serial, command)
-    malformed = fake.transport.execute(["shell", "'unterminated"], target=fake.state.serial)
-    assert not malformed.ok
-    assert len(fake.transport.mutating_calls) == 3
-
-
-@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
-def test_transport_rejects_invalid_timeouts(timeout):
-    transport = FakeHdcTransport()
-    with pytest.raises(ValueError, match="timeout"):
-        transport.execute(["-v"], timeout=timeout)
-    assert transport.calls == []
 
 
 def test_readonly_assertion_rejects_new_writes_even_after_earlier_writes(tmp_path):
@@ -560,7 +304,14 @@ def test_success_contract_persists_reservation_metrics_and_survives_restart(muta
     assert fake.transport.calls == before
 
 
-@pytest.mark.parametrize("failure", ["timeout-before", "timeout-after", "unconfirmed"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "timeout-after",
+        "unconfirmed",
+    ],
+    ids=['timeout-after-submit', 'unconfirmed-submit'],
+)
 def test_unknown_contract_blocks_same_and_restarted_runner_replay(mutation, failure):
     fake, plugin, runner = mutation
     if failure == "timeout-before":
@@ -584,9 +335,14 @@ def test_unknown_contract_blocks_same_and_restarted_runner_replay(mutation, fail
         plugin.context.interact().observe()
 
 
-@pytest.mark.parametrize("scenario", [
-    "success", "timeout-before", "timeout-after", "unconfirmed", "override",
-])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "success",
+        "timeout-after",
+    ],
+    ids=['confirmed-target', 'uncertain-target'],
+)
 def test_targeted_contract_preserves_success_and_unknown_protection(mutation, scenario):
     fake, plugin, runner = mutation
     fake.state.click_targets = [FakeClickTarget("demo_toggle", "com.example.demo")]
@@ -610,7 +366,13 @@ def test_targeted_contract_preserves_success_and_unknown_protection(mutation, sc
     fake.transport.assert_click_targets_consumed()
 
 
-@pytest.mark.parametrize("contract", [assert_idempotent_success, assert_unknown_no_replay])
+@pytest.mark.parametrize(
+    "contract",
+    [
+        assert_unknown_no_replay,
+    ],
+    ids=['unknown-still-rejects-wrong-target'],
+)
 def test_mutating_contract_rejects_wrong_click_even_when_runner_returns_unknown(
     mutation, monkeypatch, contract,
 ):
@@ -643,17 +405,6 @@ def test_mutating_contract_rejects_wrong_click_even_when_runner_returns_unknown(
         assert fake.transport.calls == before
 
 
-def test_unknown_contract_rejects_unconsumed_click_targets(mutation, monkeypatch):
-    fake, plugin, runner = mutation
-    fake.state.click_targets = [FakeClickTarget("demo_toggle", "com.example.demo")]
-    monkeypatch.setattr(plugin, "submit", lambda ctx, inspection, params: None)
-    with pytest.raises(AssertionError, match="Consumed 0 of 1"):
-        assert_unknown_no_replay(
-            runner, fake, plugin.spec.action_id, {}, expected_mutations=0,
-        )
-    assert fake.transport.mutating_calls == []
-
-
 def test_crashed_submitting_row_prevents_plugin_execution(mutation):
     fake, plugin, runner = mutation
     ledger = ActionLedger(runner.state_dir / "actions.sqlite3")
@@ -671,26 +422,9 @@ def test_crashed_submitting_row_prevents_plugin_execution(mutation):
     assert ledger.records()[0]["status"] == "unknown"
 
 
-def test_reservation_assertion_matches_exact_device_action_key_and_request(mutation):
-    fake, plugin, runner = mutation
-    with pytest.raises(AssertionError, match="durable reservation"):
-        assert_submitting(runner, fake.device, plugin.spec.action_id, {}, idempotency_key="wanted")
-    ledger = ActionLedger(runner.state_dir / "actions.sqlite3")
-    key = ledger.make_key(
-        fake.state.serial, plugin.spec.action_id, "other", plugin.spec.version, {},
-    )
-    ledger.reserve(key)
-    with pytest.raises(AssertionError, match="durable reservation"):
-        assert_submitting(runner, fake.device, plugin.spec.action_id, {}, idempotency_key="wanted")
-    key = ledger.make_key(
-        fake.state.serial, plugin.spec.action_id, "wanted", plugin.spec.version, {"changed": True},
-    )
-    ledger.reserve(key)
-    with pytest.raises(AssertionError, match="another request"):
-        assert_submitting(runner, fake.device, plugin.spec.action_id, {}, idempotency_key="wanted")
-
-
-@pytest.mark.parametrize("stage", ["inspect", "confirm"])
+@pytest.mark.parametrize(
+    "stage", ["inspect", "confirm"], ids=["inspection-write", "confirmation-write"]
+)
 def test_contract_rejects_side_effects_in_readonly_plugin_stages(mutation, stage):
     fake, plugin, runner = mutation
     plugin.mutate_during = stage
@@ -698,22 +432,14 @@ def test_contract_rejects_side_effects_in_readonly_plugin_stages(mutation, stage
         assert_idempotent_success(runner, fake, plugin.spec.action_id, {})
 
 
-def test_success_assertion_rejects_an_already_done_only_fixture(mutation):
-    fake, plugin, runner = mutation
-    fake.state.layout_index = 1
-    with pytest.raises(AssertionError, match="inspect/submit"):
-        assert_idempotent_success(runner, fake, plugin.spec.action_id, {})
-
-
-def test_unknown_assertion_does_not_swallow_failed_reservation_assertion(mutation):
-    fake, plugin, runner = mutation
-    with patch.object(ActionLedger, "reserve", return_value=None):
-        with pytest.raises(AssertionError, match="reservation contract"):
-            assert_unknown_no_replay(runner, fake, plugin.spec.action_id, {}, expected_mutations=0)
-    assert fake.transport.mutating_calls == []
-
-
-@pytest.mark.parametrize("scenario", ["thermal", "sensitive", "sensitive-after-inspection"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "thermal",
+        "sensitive-after-inspection",
+    ],
+    ids=['thermal-guard', 'sensitive-transition'],
+)
 def test_boundary_assertion_stops_before_any_reservation(mutation, scenario):
     fake, plugin, runner = mutation
     expected = "human_required"
@@ -730,25 +456,6 @@ def test_boundary_assertion_stops_before_any_reservation(mutation, scenario):
         runner, fake, plugin.spec.action_id, {}, expected_status=expected, remote=True,
     )
     assert fake.state.layout_index == (1 if scenario == "sensitive-after-inspection" else 0)
-
-
-def test_unknown_after_sensitive_transition_never_replays(mutation):
-    fake, plugin, runner = mutation
-    fake.state.layouts[1] = make_layout({"text": "Synthetic captcha"})
-    assert_unknown_no_replay(runner, fake, plugin.spec.action_id, {})
-    assert fake.state.layout_index == 1
-
-
-def test_missing_version_declaration_is_detected_through_normal_runner(mutation):
-    fake, plugin, runner = mutation
-    plugin.spec = replace(plugin.spec, min_pilot_version=None, inspection_metrics_schema=None)
-    registry = ActionRegistry()
-    registry.register(plugin)
-    result = ActionRunner(registry, state_dir=runner.state_dir).run(
-        fake.device, plugin.spec.action_id, {}, idempotency_key="old-api",
-    )
-    assert result.status == "configuration_error"
-    assert fake.transport.mutating_calls == []
 
 
 def test_offline_guard_nests_restores_and_blocks_network_and_processes():

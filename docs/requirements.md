@@ -313,7 +313,7 @@ hdc (仅依赖 Python 标准库)
    - 适配 macOS `launchd` 与 Linux `systemd` 常驻运行（提供标准模板与健康探针退出码）。
 3. **代码质量与离线可测试性**
    - `tests/` 全部使用 Mock / Fake `HdcRunner` 与脱敏真实布局 JSON Fixture，在无真机、无外网的 GitHub Actions CI 中 100% 可通过。
-   - 强制通过 `ruff check`、`python3.11 -m compileall -q src tests`、`python3.11 -m pytest`。
+   - CI 强制通过完整的 lint、语法检查和离线测试。日常开发与提交前自检按 [AGENTS.md](../AGENTS.md) 规定的改动范围、执行次数和时间预算定向验证。
 
 ---
 

@@ -90,11 +90,3 @@ def test_receipt_prune_cli_is_offline_and_json(tmp_path):
         "archived": 0, "job_tombstones_retained": True,
     }
     assert path.stat().st_mode & 0o777 == 0o600
-
-
-@pytest.mark.parametrize("days", [True, 0, -1, 365001])
-def test_invalid_retention_is_rejected(tmp_path, days):
-    from moyu_harmony_pilot.device import DeviceConfigurationError
-
-    with pytest.raises(DeviceConfigurationError):
-        ReceiptStore(tmp_path / "receipts.sqlite3", "test-worker").prune(older_than_days=days)

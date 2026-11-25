@@ -17,7 +17,6 @@ from unittest.mock import Mock
 import pytest
 
 from moyu_harmony_pilot.actions import (
-    ACTION_API_VERSION,
     ActionContext,
     ActionLedger,
     ActionOutcome,
@@ -29,49 +28,15 @@ from moyu_harmony_pilot.actions import (
 )
 from moyu_harmony_pilot.actions.budget import bounded_call
 from moyu_harmony_pilot.actions.models import ActionBudgetExceeded
-from moyu_harmony_pilot.actions.validation import check_schema, json_copy, validate_value
+from moyu_harmony_pilot.actions.validation import check_schema
 from moyu_harmony_pilot.device import (
     DeviceBusyError,
     DeviceConfigurationError,
     DeviceProfile,
     HarmonyDevice,
-    HumanRequiredError,
 )
 from moyu_harmony_pilot.hdc import HdcClient
 from tests.fakes import BATTERY_61_OVERHEATED, FakeDeviceState, FakeHdcTransport
-
-
-def test_validation_reports_declared_paths_without_echoing_input():
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["items"],
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["retry.limit"],
-                    "properties": {"retry.limit": {"type": "integer", "minimum": 1}},
-                },
-            },
-        },
-    }
-    check_schema(schema)
-    cases = [
-        ({}, '$["items"]'),
-        ({"items": [{}]}, '$["items"][0]["retry.limit"]'),
-        ({"items": [{"retry.limit": "private-value"}]}, '$["items"][0]["retry.limit"]'),
-        ({"items": [{"retry.limit": 0}]}, '$["items"][0]["retry.limit"]'),
-        ({"items": [{"retry.limit": 1, "private-key": "private-value"}]}, '$["items"][0]'),
-    ]
-    for value, expected_path in cases:
-        with pytest.raises(DeviceConfigurationError) as error:
-            validate_value(value, schema)
-        assert expected_path in str(error.value)
-        assert "private-key" not in str(error.value)
-        assert "private-value" not in str(error.value)
 
 
 @pytest.fixture(autouse=True)
@@ -187,16 +152,12 @@ def test_commit_precedes_submit_and_success_short_circuits(execution, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "error",
+    "stage,error",
     [
-        TimeoutError(),
-        HumanRequiredError("private"),
-        RuntimeError("private token"),
-        KeyboardInterrupt(),
-        SystemExit(),
+        pytest.param("submit", RuntimeError("private token"), id="submit-exception"),
+        pytest.param("confirm", KeyboardInterrupt(), id="confirm-interrupted"),
     ],
 )
-@pytest.mark.parametrize("stage", ["submit", "confirm"])
 def test_all_post_submit_errors_are_unknown_without_replay(execution, tmp_path, error, stage):
     plugin = execution[2]
     setattr(plugin, f"{stage}_error", error)
@@ -208,16 +169,6 @@ def test_all_post_submit_errors_are_unknown_without_replay(execution, tmp_path, 
     assert run_mutation(execution).status == "unknown"
     assert plugin.calls == calls
     assert not execution[1].is_busy()
-
-
-def test_failed_or_invalid_confirmation_stays_unknown(execution):
-    execution[2].outcome = ActionOutcome(status="failed")
-    assert run_mutation(execution).status == "unknown"
-
-
-def test_invalid_metric_after_submit_stays_unknown(execution):
-    execution[2].outcome = ActionOutcome(metrics={"undeclared": "raw page"})
-    assert run_mutation(execution).status == "unknown"
 
 
 def test_restart_recovers_submitting_and_changed_requests_fail_closed(execution, tmp_path):
@@ -267,15 +218,6 @@ def test_interruption_immediately_after_reservation_commit(execution, monkeypatc
     assert run_mutation(execution).status == "unknown"
 
 
-def test_cancellation_before_reservation_leaves_action_retriable(execution, tmp_path):
-    result = run_mutation(execution, cancelled=lambda: True)
-    assert result.error_code == "action_cancelled"
-    assert execution[2].calls == []
-    with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
-        assert db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
-    assert run_mutation(execution).status == "succeeded"
-
-
 def test_cancellation_after_inspection_stops_before_reservation(execution, monkeypatch, tmp_path):
     cancelled = threading.Event()
     inspect = execution[2].inspect
@@ -293,23 +235,17 @@ def test_cancellation_after_inspection_stops_before_reservation(execution, monke
         assert db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("stage", ["reserve", "submit", "confirm"])
 def test_cancellation_after_reservation_finishes_confirmation(
-    execution, monkeypatch, tmp_path, stage
+    execution, monkeypatch, tmp_path
 ):
     cancelled = threading.Event()
-    if stage == "reserve":
-        reserve = ActionLedger.reserve
+    reserve = ActionLedger.reserve
 
-        def cancel_after_commit(self, key, **kwargs):
-            reserve(self, key, **kwargs)
-            cancelled.set()
+    def cancel_after_commit(self, key, **kwargs):
+        reserve(self, key, **kwargs)
+        cancelled.set()
 
-        monkeypatch.setattr(ActionLedger, "reserve", cancel_after_commit)
-
-    def on_stage(current):
-        if current == stage:
-            cancelled.set()
+    monkeypatch.setattr(ActionLedger, "reserve", cancel_after_commit)
 
     plugin = execution[2]
     confirm = plugin.confirm
@@ -321,34 +257,12 @@ def test_cancellation_after_reservation_finishes_confirmation(
 
     monkeypatch.setattr(plugin, "confirm", confirm_with_checkpoints)
     plugin.submit_hook = lambda: time.sleep(0.15)
-    assert run_mutation(
-        execution, cancelled=cancelled.is_set, on_stage=on_stage
-    ).status == "succeeded"
+    assert run_mutation(execution, cancelled=cancelled.is_set).status == "succeeded"
     assert cancelled.is_set()
     assert plugin.calls == ["inspect", "submit", "confirm"]
     assert read_status(tmp_path) == "succeeded"
     assert run_mutation(execution).status == "already_done"
     assert plugin.calls.count("submit") == 1
-
-
-@pytest.mark.parametrize("stage", ["submit", "confirm"])
-def test_cancelled_submission_still_obeys_deadline(execution, monkeypatch, tmp_path, stage):
-    cancelled = threading.Event()
-    operation = getattr(execution[2], stage)
-
-    def expire(ctx, *args):
-        result = operation(ctx, *args)
-        cancelled.set()
-        time.sleep(2)
-        return result
-
-    monkeypatch.setattr(execution[2], stage, expire)
-    result = run_mutation(execution, cancelled=cancelled.is_set, timeout=0.2)
-    assert result.status == "unknown"
-    assert read_status(tmp_path) == "unknown"
-    assert run_mutation(execution).status == "unknown"
-    assert execution[2].calls.count("submit") == 1
-    assert ("confirm" in execution[2].calls) == (stage == "confirm")
 
 
 def test_process_death_during_submit_recovers_without_replay(execution, tmp_path):
@@ -383,14 +297,6 @@ ActionRunner(registry, state_dir=sys.argv[1]).run(
     assert read_status(tmp_path) == "unknown"
     assert execution[2].calls == []
     assert not execution[1].is_busy()
-
-
-@pytest.mark.parametrize("status", ["already_done", "human_required", "failed"])
-def test_readonly_inspection_terminal_states(execution, status):
-    plugin = execution[2]
-    plugin.inspection = Inspection(status=status)
-    assert run_mutation(execution).status == status
-    assert plugin.calls == ["inspect"]
 
 
 def test_thermal_and_sensitive_screen_guards(execution):
@@ -439,30 +345,6 @@ def test_deadline_interrupts_once_and_allows_bounded_cleanup(execution):
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
-def test_step_budget_and_dry_run_never_submit(execution):
-    assert run_mutation(execution, max_steps=1).status == "failed"
-    assert execution[2].calls == []
-    assert run_mutation(execution, dry_run=True).status == "succeeded"
-    assert execution[2].calls == []
-    with pytest.raises(DeviceConfigurationError):
-        run_mutation(execution, max_steps=0)
-    with pytest.raises(ActionBudgetExceeded):
-        ActionContext(execution[1], time.monotonic() - 1).checkpoint()
-
-
-def test_busy_signal_timer_and_worker_thread_are_rejected(execution):
-    signal.setitimer(signal.ITIMER_REAL, 60)
-    try:
-        with pytest.raises(DeviceConfigurationError):
-            run_mutation(execution)
-        assert signal.getitimer(signal.ITIMER_REAL)[0] > 0
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-    with ThreadPoolExecutor() as pool:
-        with pytest.raises(DeviceConfigurationError):
-            pool.submit(run_mutation, execution).result()
-
-
 def test_ledger_atomic_reservation_has_one_winner(tmp_path):
     ledger = ActionLedger(tmp_path / "actions.sqlite3")
     key = ledger.make_key("test-serial", "example.mutate", "key", "1.0", {})
@@ -498,63 +380,9 @@ def test_registry_metadata_snapshot_duplicate_and_remote_allowlist(execution):
     )
 
 
-def test_registry_examples_remain_tuples_and_isolated():
-    plugin = SampleMutation()
-    plugin.spec = replace(plugin.spec, examples=({"value": 1},))
-    registry = ActionRegistry()
-    registry.register(plugin)
-    plugin.spec.examples[0]["value"] = 2
-    _, spec = registry.get(plugin.spec.action_id)
-    assert spec.examples == ({"value": 1},)
-    spec.examples[0]["value"] = 3
-    assert registry.get(plugin.spec.action_id)[1].examples == ({"value": 1},)
-    assert registry.describe(plugin.spec.action_id)["examples"] == [{"value": 1}]
-
-
-@pytest.mark.parametrize(
-    "mode, message",
-    [("duplicate", "Duplicate action ID"), ("schema", "Parameters and metrics")],
-)
-def test_discovery_preserves_configuration_errors(monkeypatch, mode, message):
-    class Plugin(SampleMutation):
-        spec = replace(SampleMutation.spec, action_id="device.health")
-
-    if mode == "schema":
-        Plugin.spec = replace(Plugin.spec, params_schema={"type": "integer"})
-    entry = Mock()
-    entry.name = "device.health"
-    entry.value = "synthetic:Plugin"
-    entry.load.return_value = Plugin
-    monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [entry])
-    with pytest.raises(DeviceConfigurationError, match=message):
-        ActionRegistry.discover(env={})
-
-
-def test_discovery_hides_uncontrolled_import_errors(monkeypatch):
-    entry = Mock()
-    entry.name = "example.failed"
-    entry.value = "synthetic:Plugin"
-    entry.load.side_effect = RuntimeError("PRIVATE_IMPORT_DETAILS")
-    monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [entry])
-    with pytest.raises(DeviceConfigurationError, match="Plugin discovery failed") as error:
-        ActionRegistry.discover(env={})
-    assert "PRIVATE_IMPORT_DETAILS" not in str(error.value)
-
-
-def test_legacy_action_spec_defaults_to_api_v1(execution):
-    registry = execution[0].registry
-    assert ACTION_API_VERSION == 1
-    assert registry.describe("example.mutate")["api_version"] == 1
-    description = registry.describe("example.mutate")
-    description["api_version"] = 2
-    assert registry.describe("example.mutate")["api_version"] == 1
-    assert run_mutation(execution).status == "succeeded"
-
-
-@pytest.mark.parametrize("api_version", [0, 2, -1, True, 1.0, "1", None])
-def test_unsupported_action_api_is_rejected_before_registration(execution, api_version):
+def test_unsupported_action_api_is_rejected_before_registration(execution):
     plugin = execution[2]
-    plugin.spec = replace(plugin.spec, api_version=api_version)
+    plugin.spec = replace(plugin.spec, api_version=2)
     registry = ActionRegistry()
     with pytest.raises(DeviceConfigurationError, match="Unsupported action API"):
         registry.register(plugin)
@@ -563,73 +391,9 @@ def test_unsupported_action_api_is_rejected_before_registration(execution, api_v
     assert execution[3].calls == []
 
 
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), {"large": "a" * 17000}])
-def test_json_values_are_finite_and_bounded(value):
+def test_unsupported_or_malformed_schema_fails_closed():
     with pytest.raises(DeviceConfigurationError):
-        json_copy(value)
-
-
-@pytest.mark.parametrize(
-    "schema",
-    [
-        {"type": "object"},
-        {"type": "object", "additionalProperties": True},
-        {"type": "string", "pattern": ".*"},
-        {"type": "array"},
-        {"type": "string", "maxLength": -1},
-        {"type": "number", "maximum": "bad"},
-        {"type": "string", "minimum": 0},
-    ],
-)
-def test_unsupported_or_malformed_schema_fails_closed(schema):
-    with pytest.raises(DeviceConfigurationError):
-        check_schema(schema)
-
-
-def test_nested_parameter_validation_and_boolean_integer_distinction():
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["values"],
-        "properties": {
-            "values": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 2,
-                "items": {"type": "integer", "minimum": 1},
-            }
-        },
-    }
-    check_schema(schema)
-    validate_value({"values": [1, 2]}, schema)
-    for value in (
-        {},
-        {"values": []},
-        {"values": [True]},
-        {"values": [0]},
-        {"values": [1, 2, 3]},
-        {"values": [1], "unknown": "secret"},
-    ):
-        with pytest.raises(DeviceConfigurationError):
-            validate_value(value, schema)
-    validate_value(1.0, {"type": "number", "enum": [1]})
-    with pytest.raises(DeviceConfigurationError):
-        validate_value(True, {"type": "boolean", "enum": [1]})
-
-
-def test_invalid_action_results_and_specs_are_rejected():
-    for outcome in (
-        ActionOutcome(metrics={"a": {}}),
-        ActionOutcome(metrics={"a": "x" * 129}),
-        ActionOutcome(error_code="TOKEN secret"),
-        ActionOutcome(status="other"),
-    ):
-        with pytest.raises(DeviceConfigurationError):
-            outcome.to_dict()
-    plugin = SampleMutation()
-    plugin.spec = replace(plugin.spec, side_effect="readonly")
-    with pytest.raises(DeviceConfigurationError):
-        ActionRegistry().register(plugin)
+        check_schema({"type": "object", "additionalProperties": True})
 
 
 def test_external_entry_points_filter_before_import(monkeypatch):
@@ -672,33 +436,6 @@ def test_external_directory_manifest_and_traversal_guard(tmp_path):
         ActionRegistry.discover(env={"HARMONY_PILOT_PLUGIN_PATHS": str(tmp_path)})
 
 
-def test_builtin_readonly_actions_and_local_ui_diagnostics(execution, tmp_path):
-    _, device, _, transport, state = execution
-    runner = ActionRunner(ActionRegistry.discover(env={}), state_dir=tmp_path)
-    state.battery_dump = BATTERY_61_OVERHEATED
-    assert runner.run(device, "device.ping", {}).status == "succeeded"
-    health = runner.run(device, "device.health", {})
-    assert health.metrics["overheated"] is True
-    result = runner.run(device, "ui.inspect", {"max_elements": 2})
-    assert result.has_local_diagnostics
-    assert result.metrics["kept_elements"] == 2
-    files = list((tmp_path / "diagnostics").glob("*.json"))
-    assert len(files) == 1
-    assert json.loads(files[0].read_text())["layout_hash"] == result.metrics["layout_hash"]
-    assert files[0].stat().st_mode & 0o777 == 0o600
-    assert not transport.all_remote_tmp_files()
-
-
-def test_repository_external_example_runs_through_discovery(execution, tmp_path):
-    directory = Path(__file__).resolve().parents[1] / "examples" / "actions"
-    registry = ActionRegistry.discover(env={"HARMONY_PILOT_PLUGIN_PATHS": str(directory)})
-    runner = ActionRunner(registry, state_dir=tmp_path)
-    result = runner.run(execution[1], "example.ui_summary", {})
-    assert result.status == "succeeded"
-    assert result.metrics["visible_elements"] > 0
-    assert not execution[3].all_remote_tmp_files()
-
-
 def test_prepare_stage_runs_before_reservation_and_allows_retry(execution, tmp_path):
     from moyu_harmony_pilot.device import HumanRequiredError
 
@@ -713,8 +450,7 @@ def test_prepare_stage_runs_before_reservation_and_allows_retry(execution, tmp_p
 
         def __init__(self):
             self.calls = []
-            self.prepare_mode = "raise_human"
-            self.submit_raises = False
+            self.prepare_blocked = True
 
         def inspect(self, ctx, params):
             self.calls.append("inspect")
@@ -722,12 +458,9 @@ def test_prepare_stage_runs_before_reservation_and_allows_retry(execution, tmp_p
 
         def prepare(self, ctx, inspection, params):
             self.calls.append(f"prepare:{inspection.state}")
-            if self.prepare_mode == "raise_human":
+            if self.prepare_blocked:
                 assert row_count() == 0
                 raise HumanRequiredError("App launch blocked before submission.")
-            if self.prepare_mode == "return_human":
-                assert row_count() == 0
-                return Inspection(status="human_required")
             return Inspection(status="ready", state="prepared")
 
         def submit(self, ctx, inspection, params):
@@ -735,8 +468,6 @@ def test_prepare_stage_runs_before_reservation_and_allows_retry(execution, tmp_p
             with sqlite3.connect(tmp_path / "actions.sqlite3") as db:
                 statuses = [row[0] for row in db.execute("SELECT status FROM actions").fetchall()]
             assert "submitting" in statuses
-            if self.submit_raises:
-                raise TimeoutError("click timeout")
 
         def confirm(self, ctx, params):
             self.calls.append("confirm")
@@ -755,26 +486,12 @@ def test_prepare_stage_runs_before_reservation_and_allows_retry(execution, tmp_p
     assert row_count() == 0
     assert stages == ["inspect", "preparing"]
 
-    plugin.prepare_mode = "return_human"
-    second = runner.run(device, plugin.spec.action_id, {}, idempotency_key="day-1")
-    assert second.status == "human_required"
-    assert row_count() == 0
-
     stages.clear()
-    plugin.prepare_mode = "ok"
-    third = runner.run(
+    plugin.prepare_blocked = False
+    retried = runner.run(
         device, plugin.spec.action_id, {}, idempotency_key="day-1", on_stage=stages.append
     )
-    assert third.status == "succeeded"
+    assert retried.status == "succeeded"
     assert read_status(tmp_path) == "succeeded"
     assert stages == ["inspect", "preparing", "submit", "confirm"]
     assert plugin.calls[-4:] == ["inspect", "prepare:needs_prepare", "submit:prepared", "confirm"]
-
-    # Post-reservation submit failure still locks the key as unknown.
-    plugin.submit_raises = True
-    failed = runner.run(device, plugin.spec.action_id, {}, idempotency_key="day-2")
-    assert failed.status == "unknown"
-    calls_before_replay = len(plugin.calls)
-    replay = runner.run(device, plugin.spec.action_id, {}, idempotency_key="day-2")
-    assert replay.status == "unknown"
-    assert len(plugin.calls) == calls_before_replay

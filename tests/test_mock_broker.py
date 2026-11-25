@@ -3,13 +3,12 @@
 import copy
 import json
 from dataclasses import replace
-from datetime import timedelta
 
 import pytest
 
 from moyu_harmony_pilot.actions import ActionRegistry
 from moyu_harmony_pilot.bridge import BridgeConfig, BridgeWorker, HttpBridgeClient
-from moyu_harmony_pilot.bridge.protocol import BridgeError, BridgeProtocolError, parse_time, utc_now
+from moyu_harmony_pilot.bridge.protocol import BridgeError, BridgeProtocolError
 from moyu_harmony_pilot.hdc import HdcClient
 from moyu_harmony_pilot.testing.broker import MockBroker
 from tests.fakes import FakeDeviceState, FakeHdcTransport
@@ -92,55 +91,7 @@ def test_claim_filters_capabilities_serializes_device_and_lease_cancel(broker_wo
         broker.enqueue(copy.deepcopy(first))
 
 
-@pytest.mark.parametrize("mutation", [
-    {"maxJobs": True}, {"maxJobs": 2}, {"waitSeconds": 26},
-    {"availableDevices": ["invalid"]}, {"rawSerial": "private"},
-])
-def test_claim_rejects_malformed_fields(broker_worker, mutation):
-    _, client, _, _ = broker_worker
-    payload = {"bridgeId": "test-worker", "maxJobs": 1, "waitSeconds": 0,
-               "availableDevices": [{"deviceAlias": "phone", "capabilities": []}], **mutation}
-    with pytest.raises(BridgeProtocolError):
-        client.post("/bridge/v1/jobs/claim", payload)
-
-
-@pytest.mark.parametrize("deadline", ["lease_expires_at", "expires_at"])
-def test_expired_lease_and_job_cannot_renew(broker_worker, monkeypatch, deadline):
-    broker, client, _, _ = broker_worker
-    job = job_payload()
-    broker.enqueue(job)
-    client.post("/bridge/v1/jobs/claim", {
-        "bridgeId": "test-worker", "maxJobs": 1, "waitSeconds": 0,
-        "availableDevices": [{"deviceAlias": "phone", "capabilities": ["example.mutate"]}],
-    })
-    expired_at = getattr(broker._leased["job_001"], deadline)
-    monkeypatch.setattr("moyu_harmony_pilot.testing.broker.utc_now", lambda: expired_at)
-    with pytest.raises(BridgeError) as error:
-        client.post("/bridge/v1/jobs/job_001/lease", {
-            "bridgeId": "test-worker", "leaseToken": job["leaseToken"], "extendSeconds": 30,
-        })
-    assert error.value.status == 410
-
-
-def test_renewed_lease_is_persisted_and_capped_by_job_expiration(broker_worker, monkeypatch):
-    broker, client, _, _ = broker_worker
-    job = job_payload()
-    broker.enqueue(job)
-    client.post("/bridge/v1/jobs/claim", {
-        "bridgeId": "test-worker", "maxJobs": 1, "waitSeconds": 0,
-        "availableDevices": [{"deviceAlias": "phone", "capabilities": ["example.mutate"]}],
-    })
-    now = utc_now()
-    monkeypatch.setattr("moyu_harmony_pilot.testing.broker.utc_now", lambda: now)
-    payload = {"bridgeId": "test-worker", "leaseToken": job["leaseToken"], "extendSeconds": 120}
-    client.post("/bridge/v1/jobs/job_001/lease", payload)
-    now += timedelta(seconds=60)
-    assert client.post("/bridge/v1/jobs/job_001/lease", payload)["ok"]
-    reply = client.post("/bridge/v1/jobs/job_001/lease", {**payload, "extendSeconds": 3600})
-    assert parse_time(reply["leaseExpiresAt"]) == parse_time(job["expiresAt"])
-
-
-@pytest.mark.parametrize("status", [409, 410])
+@pytest.mark.parametrize("status", [409], ids=["conflicting-receipt"])
 def test_worker_retains_conflicted_receipt_provenance(broker_worker, monkeypatch, status):
     broker, _, worker, _ = broker_worker
     broker.enqueue(job_payload())

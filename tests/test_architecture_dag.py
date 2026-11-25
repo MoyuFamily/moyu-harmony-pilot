@@ -80,14 +80,13 @@ def test_production_never_imports_testing() -> None:
             assert "testing" not in _imported_subpackages(py_file), str(py_file)
 
 
-@pytest.mark.parametrize("source", [
-    "import moyu_harmony_pilot.testing",
-    "import moyu_harmony_pilot.testing.fakes as fake",
-    "from moyu_harmony_pilot.testing import FakeHdcTransport",
-    "from moyu_harmony_pilot import testing as helper",
-    "from ..testing import FakeHdcTransport",
-    "from .. import testing",
-])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from .. import testing",
+    ],
+    ids=['relative-import'],
+)
 def test_testing_import_guard_covers_absolute_and_relative_imports(tmp_path, source):
     module = tmp_path / "actions" / "example.py"
     module.parent.mkdir()

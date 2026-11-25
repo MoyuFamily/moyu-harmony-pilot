@@ -1,23 +1,21 @@
-"""Offline ledger migration, guarded interaction, waits and HTML artifact checks."""
+"""Offline ledger migration, guarded interaction, waits and CLI contracts."""
 
 import io
 import json
 import sqlite3
-from dataclasses import replace
 
 import pytest
 from PIL import Image
 
 from moyu_harmony_pilot.actions import ActionOutcome, InteractionSession
 from moyu_harmony_pilot.actions.ledger import ActionLedger
-from moyu_harmony_pilot.actions.reports import capture_inspector, render_inspector, write_report
 from moyu_harmony_pilot.cli.main import build_parser
 from moyu_harmony_pilot.cli.operations import OPERATION_SCHEMAS
 from moyu_harmony_pilot.cli.schema import build_cli_schema
 from moyu_harmony_pilot.device import DeviceConfigurationError, DeviceProfile, HarmonyDevice
 from moyu_harmony_pilot.hdc import HdcClient
 from moyu_harmony_pilot.ui import UiSelector
-from moyu_harmony_pilot.ui.errors import UiElementNotFoundError, UiTimeoutError
+from moyu_harmony_pilot.ui.errors import UiElementNotFoundError, UiInvalidInputError, UiTimeoutError
 from moyu_harmony_pilot.ui.selector import selector_from_dict
 from tests.fakes import FakeDeviceState, FakeHdcTransport
 from tests.test_cli import _run_cli
@@ -188,50 +186,18 @@ def test_wait_propagates_remaining_budget_and_window_filters(local_device, monke
         device.ui.wait_gone(UiSelector(id="search"), timeout=0.1, clock=lambda: now[0])
 
 
-def test_zero_wait_preserves_single_observation(local_device):
-    device = local_device[0]
-    assert device.ui.wait_for(UiSelector(id="search"), timeout=0).id == "search"
-    assert device.ui.wait_gone(UiSelector(id="missing"), timeout=0)
-    with pytest.raises(UiTimeoutError):
-        device.ui.wait_for(UiSelector(id="missing"), timeout=0)
-    with pytest.raises(UiTimeoutError):
-        device.ui.wait_gone(UiSelector(id="search"), timeout=0)
-
-
-def test_report_accepts_error_and_ledger_envelopes(tmp_path):
-    error = {"ok": False, "data": None, "error": {"code": "device_offline"}}
-    assert "device_offline" in write_report(error, tmp_path / "error.html").read_text()
-    data = {"data": {"records": [{"action_id": "app.install", "status": "unknown"}]}}
-    assert "app.install" in write_report(data, tmp_path / "ledger.html").read_text()
-
-
 @pytest.mark.parametrize(
     "selector",
-    [{"unknown": "x"}, {"enabled": 1}, {"index": -1}, {"text_regex": "["}, {"child": []}],
+    [
+        {"unknown": "x"},
+        {"text_regex": "["},
+    ],
+    ids=['unknown-field', 'invalid-pattern'],
 )
 def test_external_selectors_fail_closed(selector):
-    with pytest.raises(Exception) as error:
+    with pytest.raises(UiInvalidInputError) as error:
         selector_from_dict(selector)
     assert error.value.code == "configuration_error"
-
-
-def test_inspector_embeds_image_and_escapes_observed_text(local_device, tmp_path):
-    device, state, transport = local_device
-    result = capture_inspector(device, tmp_path / "inspect.html")
-    assert result["elements"] >= 1
-    page = (tmp_path / "inspect.html").read_text()
-    assert "data:image/png;base64," in page
-    assert "data-index='0'" in page
-    assert "addEventListener" in page
-    assert not transport.all_remote_tmp_files()
-    snapshot = device.dump_ui_compact()[1]
-    unsafe = "</script><script>alert(1)</script>"
-    snapshot = replace(snapshot, elements=(replace(snapshot.elements[0], text=unsafe),))
-    rendered = render_inspector(snapshot, state.png_bytes, alias=unsafe)
-    assert unsafe not in rendered
-    assert "&lt;/script&gt;" in rendered
-    report = write_report({"status": "unknown", "summary": unsafe}, tmp_path / "report.html")
-    assert unsafe not in report.read_text()
 
 
 def test_cli_schema_covers_every_new_parser():

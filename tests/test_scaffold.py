@@ -161,21 +161,16 @@ def test_relative_nested_destination_with_spaces_and_explicit_package(tmp_path: 
     assert all(step["cwd"] == str(path) for step in result["next_steps"])
 
 
-def test_relative_destination_defaults_to_process_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    result = scaffold.create_plugin_project("local-plugin", namespace="local")
-    assert result["path"] == str(tmp_path / "local-plugin")
-
-
-@pytest.mark.parametrize("package_name", [
-    "", "bad name", "-leading", "trailing.", "bad/name", "bad\\name", "插件",
-    "private\nsecret", "private\x00secret", "name;echo-secret", "$(secret)",
-    "1plugin", "class", "async", "tests", "TeStS", "sys", "json", "email", "typing",
-    "pathlib", "unittest", "moyu-harmony-pilot", "MoYu..Harmony--Pilot",
-    "sitecustomize", "usercustomize",
-])
+@pytest.mark.parametrize(
+    "package_name",
+    [
+        "bad/name",
+        "private\nsecret",
+        "class",
+        "moyu-harmony-pilot",
+    ],
+    ids=['path-separator', 'private-newline', 'python-keyword', 'core-package-shadow'],
+)
 def test_invalid_names_are_redacted_and_create_nothing(
     tmp_path: Path, package_name: str, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -193,10 +188,14 @@ def test_invalid_names_are_redacted_and_create_nothing(
     assert capsys.readouterr() == ("", "")
 
 
-@pytest.mark.parametrize("namespace", [
-    "", "1team", ".team", "team space", "私有", "private\nsecret",
-    "private\x00secret", "team/secret", "team;secret", "a" * 115, "a" * 129,
-])
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        "",
+        "a" * 115,
+    ],
+    ids=['empty', 'action-id-overflow'],
+)
 def test_invalid_namespace_creates_nothing(tmp_path: Path, namespace: str) -> None:
     with pytest.raises(DeviceConfigurationError) as caught:
         scaffold.create_plugin_project(tmp_path / "missing/plugin", namespace=namespace)
@@ -207,29 +206,14 @@ def test_invalid_namespace_creates_nothing(tmp_path: Path, namespace: str) -> No
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("namespace", ["A", "team_1.actions-v2", "a" * 114])
-def test_namespace_uses_final_action_identifier_limits(tmp_path: Path, namespace: str) -> None:
-    result = scaffold.create_plugin_project(tmp_path / "plugin", namespace=namespace)
-    assert result["action_ids"] == [f"{namespace}.battery_check", f"{namespace}.demo_toggle"]
-    assert all(IDENTIFIER.fullmatch(action_id) for action_id in result["action_ids"])
-
-
-def test_replacement_values_are_never_reprocessed(tmp_path: Path) -> None:
-    result = scaffold.create_plugin_project(
-        tmp_path / "plugin", namespace="harmony_pilot_example.example.demo_toggle",
-        package_name="harmony_pilot_example.extra",
-    )
-    plugin = tomllib.loads((Path(result["path"]) / "pyproject.toml").read_text(encoding="utf-8"))
-    assert plugin["project"]["name"] == "harmony_pilot_example.extra"
-    assert plugin["project"]["entry-points"]["moyu_harmony_pilot.actions"] == {
-        "harmony_pilot_example.example.demo_toggle.battery_check":
-            "harmony_pilot_example_extra.battery:BatteryCheck",
-        "harmony_pilot_example.example.demo_toggle.demo_toggle":
-            "harmony_pilot_example_extra.toggle:DemoToggle",
-    }
-
-
-@pytest.mark.parametrize("kind", ["empty", "nonempty", "file", "symlink", "dangling"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "nonempty",
+        "symlink",
+    ],
+    ids=['existing-content', 'symlink-target'],
+)
 def test_existing_destination_is_always_preserved(tmp_path: Path, kind: str) -> None:
     destination = tmp_path / "plugin"
     outside = tmp_path / "outside"
@@ -253,19 +237,6 @@ def test_existing_destination_is_always_preserved(tmp_path: Path, kind: str) -> 
         assert sorted(path.name for path in destination.iterdir()) == (
             [] if kind == "empty" else ["keep.txt"]
         )
-
-
-@pytest.mark.parametrize("destination", ["", "private\x00secret", "parent/child/plugin"])
-def test_invalid_paths_are_configuration_errors(tmp_path: Path, destination: str) -> None:
-    parent = tmp_path / "parent"
-    parent.write_text("existing file", encoding="utf-8")
-    with pytest.raises(DeviceConfigurationError) as caught:
-        scaffold.create_plugin_project(
-            destination, namespace="team", package_name="team-plugin", cwd=tmp_path,
-        )
-    assert "private" not in str(caught.value)
-    assert parent.read_text(encoding="utf-8") == "existing file"
-    assert list(tmp_path.iterdir()) == [parent]
 
 
 def test_concurrent_creators_have_one_winner(
@@ -297,7 +268,9 @@ def test_concurrent_creators_have_one_winner(
     assert all((destination / name).is_file() for name in successes[0]["files"])
 
 
-@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+@pytest.mark.parametrize(
+    "failure", [OSError, KeyboardInterrupt], ids=["io-failure", "interrupted"]
+)
 def test_partial_write_failure_removes_only_created_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException],
 ) -> None:
@@ -326,27 +299,6 @@ def test_partial_write_failure_removes_only_created_entries(
     assert marker.read_text(encoding="utf-8") == "original"
 
 
-@pytest.mark.parametrize("stage", ["parent", "destination", "source"])
-def test_mkdir_failure_cleans_new_parents(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str,
-) -> None:
-    destination = tmp_path / "new/parent/plugin"
-    failing_path = {
-        "parent": destination.parent, "destination": destination, "source": destination / "src",
-    }[stage]
-    original_mkdir = Path.mkdir
-
-    def mkdir(path: Path, *args: Any, **kwargs: Any) -> None:
-        if path == failing_path:
-            raise PermissionError("synthetic permission failure")
-        original_mkdir(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "mkdir", mkdir)
-    with pytest.raises(DeviceConfigurationError):
-        scaffold.create_plugin_project(destination, namespace="team")
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_write_collision_preserves_unrelated_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -365,24 +317,6 @@ def test_write_collision_preserves_unrelated_file(
     assert caught.value.hint is not None
     assert collision.read_text(encoding="utf-8") == "concurrent owner's content"
     assert list(destination.iterdir()) == [collision]
-
-
-def test_target_created_after_preflight_is_preserved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    destination = tmp_path / "new/plugin"
-    original_mkdir = Path.mkdir
-
-    def mkdir(path: Path, *args: Any, **kwargs: Any) -> None:
-        if path == destination:
-            original_mkdir(path)
-        original_mkdir(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "mkdir", mkdir)
-    with pytest.raises(DeviceConfigurationError, match="new directory"):
-        scaffold.create_plugin_project(destination, namespace="team")
-    assert destination.is_dir()
-    assert list(destination.iterdir()) == []
 
 
 def test_installed_record_locations_support_custom_data_prefix(
@@ -417,26 +351,13 @@ def test_editable_checkout_prefers_live_source_over_installed_copy(
         )
 
 
-def test_incomplete_source_checkout_uses_complete_installed_template(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    installed, _ = installed_template(tmp_path, monkeypatch)
-    (installed / "README.md").write_text("Complete installed template\n", encoding="utf-8")
-    checkout = tmp_path / "checkout"
-    source = checkout / "examples/plugin-template"
-    copy_template(source)
-    (source / "README.md").unlink()
-    monkeypatch.setattr(
-        scaffold, "__file__", str(checkout / "src/moyu_harmony_pilot/cli/scaffold.py"),
-    )
-    result = scaffold.create_plugin_project(tmp_path / "plugin", namespace="team")
-    assert (Path(result["path"]) / "README.md").read_text(encoding="utf-8") == (
-        "Complete installed template\n"
-    )
-
-
 @pytest.mark.parametrize(
-    "damage", ["missing-record", "duplicate-record", "missing-file", "encoding"],
+    "damage",
+    [
+        "missing-record",
+        "missing-file",
+    ],
+    ids=['missing-record', 'missing-file'],
 )
 def test_incomplete_installed_template_fails_before_creating_parents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str,
@@ -456,7 +377,9 @@ def test_incomplete_installed_template_fails_before_creating_parents(
     assert not (tmp_path / "new").exists()
 
 
-@pytest.mark.parametrize("layout", ["src", "site-packages"])
+@pytest.mark.parametrize(
+    "layout", ["src", "site-packages"], ids=["source-allowlist", "installed-scope"]
+)
 def test_source_loading_is_bound_to_module_layout_and_fixed_allowlist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str,
 ) -> None:

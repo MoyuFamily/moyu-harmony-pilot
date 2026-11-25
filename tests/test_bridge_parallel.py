@@ -115,7 +115,13 @@ def test_parallel_slots_use_distinct_main_threads_and_overlap(parallel_worker):
     assert worker.store.recover() == 0
 
 
-@pytest.mark.parametrize("mode", ["crash", "sleep"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("crash", id="process-death-isolated"),
+        pytest.param("sleep", id="timeout-isolated"),
+    ],
+)
 def test_child_failure_does_not_interrupt_other_device(parallel_worker, mode):
     worker, broker = parallel_worker
     broker.jobs[0]["params"] = {mode: True}

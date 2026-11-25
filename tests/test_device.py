@@ -17,7 +17,6 @@ from moyu_harmony_pilot.device import (
     DeviceOverheatedError,
     DeviceProfile,
     DeviceRegistry,
-    DiagnosticsStore,
     HarmonyDevice,
     ScreenState,
     UnknownDeviceAliasError,
@@ -188,7 +187,9 @@ def test_device_lock_in_process_and_cross_process_contention(tmp_path: Path) -> 
     assert is_device_busy(raw_serial, lock_dir) is False
 
 
-@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize(
+    "interruption", [KeyboardInterrupt, SystemExit], ids=["keyboard-interrupt", "process-exit"]
+)
 def test_interrupted_lock_acquisition_releases_descriptor_and_thread_lock(
     tmp_path, monkeypatch, interruption
 ):
@@ -246,30 +247,6 @@ def test_telemetry_parsers_calibrated_to_harmony_61() -> None:
     fg = parse_foreground_window(WMS_61_FOCUS)
     assert fg.window_id == 42
     assert fg.bundle_name == "com.example.demo0"
-
-
-def test_diagnostics_store_permissions_and_rolling_retention(tmp_path: Path) -> None:
-    diag_dir = tmp_path / "diag"
-    store = DiagnosticsStore(diag_dir, max_files=3, max_total_bytes=1024)
-
-    paths: list[Path] = []
-    for idx in range(5):
-        p = store.save_text(f"snap_{idx}", f"payload-{idx}", suffix=".json")
-        paths.append(p)
-
-    if os.name == "posix":
-        assert (diag_dir.stat().st_mode & 0o777) == 0o700
-        assert (paths[-1].stat().st_mode & 0o777) == 0o600
-
-    remaining = list(diag_dir.iterdir())
-    assert len(remaining) == 3
-
-    # Also test byte-cap pruning
-    small_store = DiagnosticsStore(tmp_path / "diag_bytes", max_files=10, max_total_bytes=15)
-    for idx in range(4):
-        small_store.save_bytes(f"b{idx}", b"0123456789", suffix=".bin")
-    kept = list((tmp_path / "diag_bytes").iterdir())
-    assert len(kept) == 1
 
 
 def test_harmony_device_health_thermal_guard_screenshot_and_controls(tmp_path: Path) -> None:

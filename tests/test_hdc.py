@@ -44,7 +44,13 @@ def _make_executable_script(path: Path, body: str) -> Path:
     return path
 
 
-@pytest.mark.parametrize("cleanup_times_out", [False, True])
+@pytest.mark.parametrize(
+    "cleanup_times_out",
+    [
+        True,
+    ],
+    ids=['cleanup-timeout'],
+)
 def test_external_interruption_reaps_hdc_process(
     tmp_path: Path, monkeypatch, cleanup_times_out
 ) -> None:

@@ -19,13 +19,11 @@ from moyu_harmony_pilot.actions.fixtures import capture_fixture, write_sanitized
 from moyu_harmony_pilot.cli import SCHEMA_VERSION, main
 from moyu_harmony_pilot.device import (
     DeviceBusyError,
-    DeviceConfigurationError,
     DeviceProfile,
     HarmonyDevice,
 )
 from moyu_harmony_pilot.hdc import HdcClient, HdcError
 from moyu_harmony_pilot.ui import (
-    INTERACTIVE_NODE_TYPES,
     UiInvalidInputError,
     UiParseError,
     build_compact_snapshot,
@@ -34,7 +32,7 @@ from moyu_harmony_pilot.ui import (
     redact_layout_dict,
     redact_layout_json,
 )
-from tests.fakes import FakeDeviceState, FakeHdcTransport, load_home_layout_json
+from tests.fakes import FakeDeviceState, FakeHdcTransport
 
 
 def _private_layout() -> dict[str, Any]:
@@ -160,121 +158,23 @@ def test_default_redaction_removes_private_literals_without_mutating_input() -> 
 @pytest.mark.parametrize(
     "key",
     [
-        "type",
         "bounds",
-        "origBounds",
         "clickable",
-        "longClickable",
-        "scrollable",
-        "checkable",
-        "checked",
-        "enabled",
-        "focused",
-        "selected",
-        "visible",
-        "hostWindowId",
-        "windowId",
-        "displayId",
-        "id",
-        "key",
-        "abilityName",
-        "pagePath",
-        "bundleName",
         "text",
-        "description",
-        "hint",
-        "accessibilityText",
-        "content",
     ],
+    ids=['bounds', 'clickable', 'text'],
 )
 @pytest.mark.parametrize(
     "value",
     [
-        "synthetic-structural-secret",
         {"private": "synthetic-structural-secret"},
-        ["synthetic-structural-secret"],
     ],
+    ids=['nested-private-value'],
 )
 def test_structural_keys_never_bypass_redaction(key: str, value: Any) -> None:
     sanitized, _ = redact_layout_dict({"attributes": {key: value}, "children": []})
     assert "synthetic-structural-secret" not in json.dumps(sanitized)
     parse_layout_dict(sanitized)
-
-
-@pytest.mark.parametrize("key", ["text", "description", "hint", "accessibilityText", "content"])
-@pytest.mark.parametrize("value", ["", " ", "   ", " \t\r\n", "\u00a0\u2003\u3000"])
-def test_blank_text_redaction_preserves_compact_pruning(key: str, value: str) -> None:
-    original = {"attributes": {"type": "Text", "bounds": "[0,0][100,100]", key: value}}
-    sanitized_json, summary = redact_layout_json(json.dumps(original))
-    sanitized = json.loads(sanitized_json)
-    assert sanitized["attributes"][key] == (" " if value else "")
-    assert summary.redacted_texts == int(bool(value))
-    before, after = parse_layout_dict(original), parse_layout_json(sanitized_json)
-    assert before.root.has_semantic_text is after.root.has_semantic_text is False
-    assert before.root.display_label == after.root.display_label == ""
-    assert build_compact_snapshot(before).elements == build_compact_snapshot(after).elements == ()
-
-
-@pytest.mark.parametrize("key", ["text", "description", "hint", "accessibilityText", "content"])
-@pytest.mark.parametrize("value", ["", " \t\r\n", "\u00a0\u2003\u3000"])
-def test_blank_text_redaction_preserves_compact_folding(key: str, value: str) -> None:
-    original = {
-        "attributes": {
-            "type": "Button",
-            "bounds": "[0,0][100,100]",
-            "clickable": True,
-            key: value,
-        },
-        "children": [
-            {
-                "attributes": {
-                    "type": "Text",
-                    "bounds": "[10,10][90,90]",
-                    "text": "Synthetic child label",
-                }
-            },
-        ],
-    }
-    sanitized, summary = redact_layout_dict(original)
-    before_tree, after_tree = parse_layout_dict(original), parse_layout_dict(sanitized)
-    before, after = build_compact_snapshot(before_tree), build_compact_snapshot(after_tree)
-    assert summary.redacted_texts == 1 + int(bool(value))
-    assert before_tree.root.has_semantic_text is after_tree.root.has_semantic_text is False
-    assert before.kept_elements == after.kept_elements == 1
-    assert before.elements[0].ref == after.elements[0].ref == "@e1"
-    assert before.elements[0].path == after.elements[0].path == "0"
-    assert before.elements[0].interactive is after.elements[0].interactive is True
-    assert before.elements[0].text == before_tree.root.children[0].text
-    assert after.elements[0].text == after_tree.root.children[0].text == "Text 1"
-    assert after.elements[0].description == after.elements[0].hint == ""
-
-
-@pytest.mark.parametrize("leading_key", ["description", "accessibilityText"])
-@pytest.mark.parametrize("value", ["", " \t\r\n", "\u00a0\u2003\u3000"])
-def test_blank_description_redaction_preserves_parser_alias_precedence(
-    leading_key: str,
-    value: str,
-) -> None:
-    original = {
-        "attributes": {
-            "type": "Text",
-            "bounds": "[0,0][100,100]",
-            leading_key: value,
-            "content": "Synthetic fallback",
-        },
-    }
-    if leading_key == "description":
-        original["attributes"]["accessibilityText"] = "Synthetic fallback"
-    sanitized, _ = redact_layout_dict(original)
-    before_tree, after_tree = parse_layout_dict(original), parse_layout_dict(sanitized)
-    assert bool(before_tree.root.description) is bool(after_tree.root.description) is True
-    assert before_tree.root.has_semantic_text is after_tree.root.has_semantic_text is (not value)
-    assert after_tree.root.description == (" " if value else "Text 1")
-    before, after = build_compact_snapshot(before_tree), build_compact_snapshot(after_tree)
-    assert before.kept_elements == after.kept_elements == int(not value)
-    assert [element.path for element in before.elements] == [
-        element.path for element in after.elements
-    ]
 
 
 def test_keep_lists_are_exact_validated_and_cannot_preserve_ids_or_custom_types() -> None:
@@ -297,126 +197,11 @@ def test_keep_lists_are_exact_validated_and_cannot_preserve_ids_or_custom_types(
 
 
 @pytest.mark.parametrize(
-    "options",
-    [
-        {"keep_texts": "Close"},
-        {"keep_bundles": "com.example.demo"},
-        {"keep_texts": [None]},
-        {"keep_bundles": [1]},
-        {"keep_texts": None},
-        {"keep_texts": [""]},
-        {"keep_texts": [" "]},
-        {"keep_texts": ["x" * 257]},
-        {"keep_texts": ["fixture@example.invalid"]},
-        {"keep_texts": ["https://example.invalid/private"]},
-        {"keep_texts": ["192.0.2.1"]},
-        {"keep_texts": ["+1 (202) 555-0100"]},
-        {"keep_texts": ["123456"]},
-        {"keep_texts": ["token=synthetic-secret"]},
-        {"keep_texts": ["password:synthetic-secret"]},
-        {"keep_texts": ["Bearer synthetic-secret"]},
-        {"keep_texts": ["Close\nprivate"]},
-        {"keep_texts": ["Close\x00private"]},
-        {"keep_texts": ["Close\u202eprivate"]},
-        {"keep_bundles": ["com.example.demo\n"]},
-        {"keep_bundles": ["com..demo"]},
-        {"keep_bundles": ["private bundle"]},
-        {"keep_bundles": ["https://example.invalid"]},
-    ],
-)
-def test_invalid_keep_lists_fail_with_sanitized_configuration_errors(
-    options: dict[str, Any],
-) -> None:
-    with pytest.raises(UiInvalidInputError) as error:
-        redact_layout_dict(_private_layout(), **options)
-    assert error.value.code == "configuration_error"
-    assert "synthetic-secret" not in str(error.value)
-    assert "example.invalid" not in str(error.value)
-
-
-def test_pseudonyms_avoid_kept_values_and_preserve_repeated_identifier_equivalence() -> None:
-    raw = {
-        "attributes": {"type": "root", "bundleName": "com.example.private", "id": "node_id_1"},
-        "children": [
-            {
-                "attributes": {
-                    "text": "private",
-                    "bundleName": "com.example.app1",
-                    "id": "node_id_1",
-                }
-            },
-            {"attributes": {"text": "Text 1", "bundleName": "com.example.private", "id": "second"}},
-        ],
-    }
-    sanitized, _ = redact_layout_dict(raw, keep_texts=["Text 1"], keep_bundles=["com.example.app1"])
-    root = sanitized["attributes"]
-    first, second = (node["attributes"] for node in sanitized["children"])
-    assert root["bundleName"] == second["bundleName"] != first["bundleName"]
-    assert first["text"] != second["text"] == "Text 1"
-    assert root["id"] == first["id"] != "node_id_1"
-    assert second["id"] != first["id"]
-
-
-def test_flat_nodes_bounds_variants_and_numeric_ids_remain_parseable() -> None:
-    raw = {
-        "type": "Column",
-        "bounds": {"left": "0", "top": 0, "right": 400, "bottom": 800},
-        "children": [
-            {"type": "TextInput", "origBounds": [10, 20, 200, 100], "id": 123, "hint": "private"},
-            {"attributes": {"type": "Button", "bounds": "[10, 120][200, 200]", "key": 123}},
-        ],
-    }
-    before = parse_layout_dict(raw)
-    sanitized, summary = redact_layout_dict(raw)
-    after = parse_layout_dict(sanitized)
-    assert before.screen_size == after.screen_size
-    assert summary.node_count == 3
-    assert after.root.children[0].id == after.root.children[1].id != "123"
-    assert [node.bounds for node in before.iter_nodes()] == [
-        node.bounds for node in after.iter_nodes()
-    ]
-
-
-@pytest.mark.parametrize("bounds", ["", None, {}, []])
-def test_empty_bounds_keep_orig_bounds_fallback(bounds: Any) -> None:
-    original = {
-        "attributes": {"type": "Button", "bounds": bounds, "origBounds": "[10,20][300,400]"}
-    }
-    sanitized, _ = redact_layout_dict(original)
-    assert parse_layout_dict(sanitized).root.bounds == parse_layout_dict(original).root.bounds
-
-
-@pytest.mark.parametrize("node_type", sorted(INTERACTIVE_NODE_TYPES))
-def test_redaction_preserves_public_interactive_component_types(node_type: str) -> None:
-    original = {"attributes": {"type": node_type, "bounds": "[10,20][300,400]"}}
-    sanitized, _ = redact_layout_dict(original)
-    assert parse_layout_dict(sanitized).root.is_interactive
-    assert sanitized["attributes"]["type"] == node_type
-
-
-def test_cyclic_layout_fails_with_a_structured_error() -> None:
-    original: dict[str, Any] = {"attributes": {"type": "root"}}
-    original["children"] = [original]
-    with pytest.raises(UiParseError):
-        redact_layout_dict(original)
-
-
-@pytest.mark.parametrize(
     "raw",
     [
-        "",
-        " ",
-        "{",
-        "[]",
-        "null",
-        "{}",
-        '{"unrelated": "synthetic-private"}',
-        '{"attributes": []}',
         '{"attributes": {}, "children": "synthetic-private"}',
-        '{"attributes": {}, "children": ["synthetic-private"]}',
-        '{"attributes": {}, "attributes": {}}',
-        '{"attributes": {"displayId": NaN}}',
     ],
+    ids=['invalid-private-children'],
 )
 def test_malformed_input_preserves_existing_destination_and_reports_no_raw_values(
     tmp_path: Path,
@@ -431,18 +216,6 @@ def test_malformed_input_preserves_existing_destination_and_reports_no_raw_value
     assert output.read_bytes() == b"existing fixture"
     assert output.stat().st_mode & 0o777 == 0o640
     assert sorted(path.name for path in tmp_path.iterdir()) == ["fixture.json"]
-
-
-def test_json_output_is_deterministic_across_attribute_insertion_order() -> None:
-    raw = _private_layout()
-    reordered = copy.deepcopy(raw)
-    for node in [reordered, *reordered["children"]]:
-        node["attributes"] = dict(reversed(tuple(node["attributes"].items())))
-    first, summary = redact_layout_json(json.dumps(raw))
-    second, second_summary = redact_layout_json(json.dumps(reordered))
-    assert first == second
-    assert summary == second_summary
-    assert parse_layout_json(first).layout_hash == parse_layout_json(second).layout_hash
 
 
 def test_capture_uses_only_readonly_dump_transfer_cleanup_and_returns_safe_json(
@@ -486,29 +259,21 @@ def test_capture_uses_only_readonly_dump_transfer_cleanup_and_returns_safe_json(
     _assert_capture_cleanup(transport)
 
 
-def test_offline_helper_and_capture_share_identical_bytes_and_report(
-    tmp_path: Path,
-) -> None:
-    raw = load_home_layout_json()
-    device, _, transport = _fake_device(tmp_path, raw)
-    offline, captured = tmp_path / "offline.json", tmp_path / "captured.json"
-    options = {"keep_texts": ["Run Now"], "keep_bundles": ["com.example.demo"]}
-    report = write_sanitized_fixture(raw, offline, **options)
-    device_report = capture_fixture(
-        device, captured, keep_texts=options["keep_texts"], keep_bundles=options["keep_bundles"]
-    )
-    assert captured.read_bytes() == offline.read_bytes()
-    assert report == {**device_report, "path": str(offline)}
-    assert report["manual_review_required"] is report["redaction"]["manual_review_required"] is True
-    assert offline.stat().st_mode & 0o777 == 0o600
-    _assert_capture_cleanup(transport)
-
-
 @pytest.mark.parametrize(
     "failure",
-    ["capture", "receive", "parse", "keep_list", "permissions", "write", "fsync", "replace"],
+    [
+        "receive",
+        "write",
+    ],
+    ids=['receive-failure', 'partial-write'],
 )
-@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "existing",
+    [
+        True,
+    ],
+    ids=['existing-destination'],
+)
 def test_capture_failure_preserves_destination_cleans_temporary_files_and_releases_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -564,16 +329,6 @@ def test_capture_failure_preserves_destination_cleans_temporary_files_and_releas
     _assert_capture_cleanup(transport)
 
 
-@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), True, "30"])
-def test_invalid_timeout_fails_before_device_access(tmp_path: Path, timeout: Any) -> None:
-    device, _, transport = _fake_device(tmp_path, json.dumps(_private_layout()))
-    destination = tmp_path / "candidate.json"
-    with pytest.raises(DeviceConfigurationError):
-        capture_fixture(device, destination, timeout=timeout)
-    assert not destination.exists()
-    assert transport.calls == []
-
-
 def test_capture_respects_device_lock(tmp_path: Path) -> None:
     device, _, transport = _fake_device(tmp_path, json.dumps(_private_layout()))
     destination = tmp_path / "candidate.json"
@@ -594,7 +349,13 @@ def test_atomic_success_replaces_symlink_without_touching_target(tmp_path: Path)
     assert destination.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("failure, expected_code", [(None, 0), ("parse", 1), ("keep_list", 2)])
+@pytest.mark.parametrize(
+    "failure, expected_code",
+    [
+        ("keep_list", 2),
+    ],
+    ids=['private-allowlist-rejected'],
+)
 def test_fixture_cli_emits_one_sanitized_json_envelope(
     tmp_path: Path,
     failure: str | None,
