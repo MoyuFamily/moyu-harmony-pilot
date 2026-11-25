@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,15 @@ from moyu_harmony_pilot.actions import ActionRegistry, ActionRunner, Interaction
 from moyu_harmony_pilot.actions.budget import bounded_call, ensure_deadline_available
 from moyu_harmony_pilot.actions.models import ActionBudgetExceeded, ActionContext
 from moyu_harmony_pilot.actions.observation import capture_ocr, capture_screenshot
+from moyu_harmony_pilot.actions.sms import SMS_ERROR_HINTS
 from moyu_harmony_pilot.device import (
     DeviceConfigurationError,
     DeviceError,
     DeviceRegistry,
     HarmonyDevice,
 )
-from moyu_harmony_pilot.hdc import ConnectionState, HdcClient
+from moyu_harmony_pilot.hdc import ConnectionState, HdcClient, HdcError
+from moyu_harmony_pilot.ui import UiError
 
 DEFAULT_MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
@@ -38,9 +41,10 @@ class PilotTools:
         inline_images: bool = False,
         max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
         enable_ocr: bool = False,
+        enable_sms: bool = False,
     ) -> None:
         InteractionSession.validate_budget(max_steps, timeout)
-        if type(inline_images) is not bool or type(enable_ocr) is not bool:
+        if any(type(value) is not bool for value in (inline_images, enable_ocr, enable_sms)):
             raise DeviceConfigurationError("Observation startup switches must be boolean.")
         if type(max_image_bytes) is not int or not 1 <= max_image_bytes <= MAX_IMAGE_BYTES:
             raise DeviceConfigurationError(
@@ -56,6 +60,7 @@ class PilotTools:
         self.inline_images = inline_images
         self.max_image_bytes = max_image_bytes
         self.enable_ocr = enable_ocr
+        self.enable_sms = enable_sms
         self.runner = ActionRunner(actions, state_dir=state_dir)
         self._sessions: dict[str, InteractionSession] = {}
         for action_id in actions.allowed_actions:
@@ -151,6 +156,29 @@ class PilotTools:
                 for action_id in sorted(self.actions.allowed_actions)
             ]
         }
+
+    def sms_read(
+        self, alias: str, *, limit: int = 10, sender: str | None = None,
+        wait_seconds: float = 0, timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        if not self.enable_sms:
+            raise DeviceConfigurationError("SMS reading requires explicit --enable-sms startup.")
+        from moyu_harmony_pilot.actions.sms import read_sms, validate_sms_options
+
+        validate_sms_options(limit=limit, sender=sender, wait_seconds=wait_seconds, timeout=timeout)
+
+        try:
+            # Private message text belongs only in the requested result.
+            with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
+                return read_sms(
+                    self._device(alias), limit=limit, sender=sender, wait_seconds=wait_seconds,
+                    timeout=timeout,
+                )
+        except (DeviceError, HdcError, UiError) as exc:
+            raise type(exc)(
+                "SMS observation stopped.", code=exc.code, retryable=exc.retryable,
+                hint=SMS_ERROR_HINTS.get(exc.code, type(exc).default_hint),
+            ) from None
 
     def run_action(
         self,

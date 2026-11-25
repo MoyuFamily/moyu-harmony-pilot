@@ -641,7 +641,7 @@ def test_external_entry_points_filter_before_import(monkeypatch):
     registry = ActionRegistry.discover(env={}, remote=True)
     entry.load.assert_not_called()
     assert {item["action_id"] for item in registry.list()} == {
-        "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall",
+        "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall", "sms.open",
     }
     registry = ActionRegistry.discover(env={}, remote=True, allowed_actions=["example.mutate"])
     entry.load.assert_called_once()

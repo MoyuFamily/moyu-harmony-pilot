@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ActionRegistry
+from moyu_harmony_pilot.actions.sms import SMS_RESULT_SCHEMA
 from moyu_harmony_pilot.device import (
     DeviceConfigurationError,
     DeviceError,
@@ -176,6 +177,34 @@ def create_server(adapter: PilotTools) -> "MCPServer":
         """Describe explicitly allowed actions, parameter schemas and side-effect levels."""
         return invoke(adapter.list_actions)
 
+    if adapter.enable_sms:
+
+        @server.tool(
+            annotations=readonly,
+            meta={
+                "private_content": True, "scope": "current-screen",
+                "result_schema": SMS_RESULT_SCHEMA,
+            },
+        )
+        async def sms_read(
+            alias: str,
+            limit: Annotated[int, Field(ge=1, le=50, strict=True)] = 10,
+            sender: Annotated[str, Field(min_length=1, max_length=128, strict=True)] | None = None,
+            wait_seconds: Annotated[float, Field(ge=0, le=300, strict=True)] = 0,
+            timeout: Annotated[float, Field(gt=0, le=3600, strict=True)] = 30.0,
+        ) -> CallToolResult:
+            """Read private SMS text and verification codes from the current system SMS page.
+
+            Requires --enable-sms. Observes the current screen without navigation.
+            A positive wait_seconds waits for messages newer than the initial observation.
+            wait_seconds must be less than timeout. sender must be nonblank when supplied.
+            """
+            return invoke(
+                lambda: adapter.sms_read(
+                    alias, limit=limit, sender=sender, wait_seconds=wait_seconds, timeout=timeout
+                )
+            )
+
     @server.tool(annotations=mutating)
     async def run_action(
         alias: str,
@@ -271,6 +300,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--enable-ocr", action="store_true",
         help="Expose the independent read-only local OCR tool.",
     )
+    parser.add_argument(
+        "--enable-sms", action="store_true",
+        help="Expose read-only private SMS content from the current system SMS screen.",
+    )
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--timeout", type=float, default=60)
     args = parser.parse_args(argv)
@@ -293,6 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 inline_images=args.inline_images,
                 max_image_bytes=args.max_image_bytes,
                 enable_ocr=args.enable_ocr,
+                enable_sms=args.enable_sms,
             )
             server = create_server(adapter)
         server.run(transport="stdio")

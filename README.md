@@ -59,6 +59,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 - **[创建与离线验证业务插件](docs/actions.md#从离线工程开始)** — 使用 `harmony-pilot plugins init ../team-pilot --namespace team` 生成独立工程，安装后运行 `python -m tests`，再逐步替换业务实现和测试场景。
 - **[应用管理、交互与运行诊断](docs/app-management.md)** — HAP 下载部署、应用查询、引用式输入、账本对账、多设备执行与离线可视化检查和报告。
+- **[系统短信与验证码读取](docs/sms.md)** — 读取当前短信、等待新消息，以及通过 SSH 或显式启用的 MCP 工具获取验证码。
 - **[Action 插件与本地执行](docs/actions.md)** — 插件发现机制、参数与回执 Schema、执行预算、SQLite 幂等账本、视觉标注/OCR 与受控交互。
 - **[独立插件模板](examples/plugin-template/README.md)** — 开箱即用的独立插件工程模板、API 兼容性声明、离线契约测试与 CI 配置。
 - **[插件目录与维护指南](docs/plugin-catalog.md)** — 仓库通用示例清单、社区插件登记方式与插件上线/升级/下线流程。

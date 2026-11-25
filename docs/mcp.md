@@ -35,6 +35,16 @@ harmony-pilot-mcp --config devices.local.json --allow-action device.health
 - **统一返回与共享护栏**：所有工具返回值都包含 `ok`、`data` 与结构化 `error`，失败时同步设置 MCP `isError=true`。插件过程日志会重定向到 `stderr`，不污染 stdio 协议通道。有副作用动作与 CLI / Bridge 共用同一套 `ActionRunner`、设备锁、过温保护与 SQLite 幂等账本。
 - **受控错误信息**：可控的设备/UI/视觉异常保留明确的错误码、提示和可重试标记；包含底层子进程输出的 `hdc` 错误会被裁剪为有界提示，避免泄露无关原文；未预期异常仅返回通用错误；提交后不确定的结果保持 `retryable=false`，需人工核对或只读对账。
 
+## 系统短信读取
+
+通过 `--enable-sms` 显式增加只读 `sms_read` 工具。参数包括设备别名、发送方、条数上限、等待时长和总超时，结果包含当前可见短信原文及验证码候选。需要打开短信列表时同时传入 `--allow-action sms.open`，通过既有 `run_action` 和幂等键执行导航。
+
+```bash
+harmony-pilot-mcp --config devices.local.json --enable-sms --allow-action sms.open
+```
+
+工具元数据标记 `private_content=true`。原文随 MCP 调用返回，客户端历史也需要按个人敏感数据管理。SSH 接入、等待新短信和结果字段见[系统短信与验证码读取](sms.md)。
+
 ## 内联截图
 
 启动时通过 `--inline-images` 授权内联图片，并用 `--max-image-bytes` 设置单张图片的原始文件字节上限。默认值为 2 MiB（2097152），可设范围为 1 至 16 MiB（16777216）。

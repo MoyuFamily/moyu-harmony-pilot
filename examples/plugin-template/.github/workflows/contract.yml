@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MoyuFamily/moyu-harmony-pilot
-          ref: ${{ vars.PILOT_REF || 'v0.2.0rc1' }}
+          ref: ${{ vars.PILOT_REF || 'v0.2.0rc2' }}
           path: .pilot-sdk
       - name: Install the SDK and both plugin entry points
         run: |

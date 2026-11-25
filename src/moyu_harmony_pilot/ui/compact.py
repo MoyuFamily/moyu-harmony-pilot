@@ -6,6 +6,7 @@ import re
 from collections import Counter
 
 from moyu_harmony_pilot.ui.models import (
+    INTERACTIVE_NODE_TYPES,
     CompactElement,
     CompactSnapshot,
     LayoutDiff,
@@ -169,6 +170,81 @@ def _collect_passive_descendant_text(
     return (_truncate(" | ".join(labels), max_len), folded_paths)
 
 
+def _sms_content_paths(tree: UiTree) -> set[str]:
+    """Prove displayed message roles within a visible system SMS window.
+
+    Only content fields at these paths are exempt from keyword checks. Explicit
+    control types/IDs and every other node still participate in safety detection.
+    """
+    scopes: dict[str, list[UiNode]] = {}
+
+    def _visit(
+        node: UiNode, parent_bundle: str = "", parent_window: str = "", scope: str = ""
+    ) -> None:
+        if not node.visible:
+            return
+        if node.bounds.is_valid and not node.bounds.intersects_viewport(*tree.screen_size):
+            return
+        # Match compact snapshot bundle inheritance, including unresolved new windows.
+        bundle = node.bundle_name or (
+            parent_bundle if not node.window_id or node.window_id == parent_window else ""
+        )
+        window = node.window_id or parent_window
+        if bundle != parent_bundle or window != parent_window:
+            scope = node.path
+        if bundle == "com.ohos.mms" and node.bounds.is_valid:
+            scopes.setdefault(scope, []).append(node)
+        for child in node.children:
+            _visit(child, bundle, window, scope)
+
+    _visit(tree.root)
+    content_paths: set[str] = set()
+    for nodes in scopes.values():
+        visible_paths = {node.path for node in nodes}
+        for container in nodes:
+            short_type = container.type.rsplit(".", 1)[-1]
+            if (
+                short_type == "RelativeContainer"
+                and re.fullmatch(r"ConversationList[0-9]+", container.id)
+            ):
+                body_id = "message_details_content"
+                page_ids = {"conversationListSearchBar", "HdsConversationList"}
+            elif (
+                short_type == "Column"
+                and re.fullmatch(r"MessageListContent[0-9]+", container.id)
+            ):
+                body_id = "msg_content_text"
+                page_ids = {"messageList"}
+            else:
+                continue
+            prefix = container.path + "/"
+            if not any(
+                node.id in page_ids and not node.path.startswith(prefix) for node in nodes
+            ):
+                continue
+            descendants = [node for node in nodes if node.path.startswith(prefix)]
+            # A form inside a purported message must keep its labels as safety evidence.
+            if any(
+                node.type.rsplit(".", 1)[-1] in _INPUT_CONTROL_TYPES | INTERACTIVE_NODE_TYPES
+                for node in container.iter_nodes()
+            ):
+                continue
+            bodies = [node for node in descendants if node.id == body_id]
+            if len(bodies) != 1 or bodies[0].type.rsplit(".", 1)[-1] != "Text":
+                continue
+            body_nodes = list(bodies[0].iter_nodes())
+            # Native Text may expose its label through nested Span nodes. Prove the
+            # whole content subtree, including visibility, geometry and window ownership.
+            if any(node.path not in visible_paths for node in body_nodes) or any(
+                node.type.rsplit(".", 1)[-1] != "Span" for node in body_nodes[1:]
+            ):
+                continue
+            if any(node.has_semantic_text for node in body_nodes):
+                content_paths.add(container.path)
+                content_paths.update(node.path for node in body_nodes)
+    return content_paths
+
+
 def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
     """Detect contextual password, verification, payment, and permission signals.
 
@@ -179,6 +255,7 @@ def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
     has_permission_context = False
     has_password_label = False
     keypad_digits: set[str] = set()
+    sms_content_paths = _sms_content_paths(tree)
 
     def _walk(node: UiNode, labels: tuple[str, ...] = (), *, in_menu: bool = False) -> None:
         nonlocal has_permission_grant, has_permission_context, has_password_label
@@ -194,7 +271,8 @@ def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
         in_menu = in_menu or short_type in {"MenuItem", "ListItem"} or (
             node.clickable and short_type == "Row"
         )
-        text_parts = " ".join(part for part in (node.text, node.description, node.hint) if part)
+        content = () if node.path in sms_content_paths else (node.text, node.description, node.hint)
+        text_parts = " ".join(part for part in content if part)
         # Bound ID tokens also cover camelCase, without matching e.g. "spinning_input".
         identifier = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", node.id).replace("_", " ")
         input_context = f"{identifier} {text_parts}"
@@ -218,7 +296,12 @@ def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
 
         if not in_menu and _PASSWORD_LABEL_RE.fullmatch(text_parts.strip()):
             has_password_label = True
-        if node.clickable and node.text.strip() in "0123456789" and len(node.text.strip()) == 1:
+        if (
+            content
+            and node.clickable
+            and node.text.strip() in "0123456789"
+            and len(node.text.strip()) == 1
+        ):
             keypad_digits.add(node.text.strip())
 
         if combined:
@@ -233,7 +316,7 @@ def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
             if text_parts:
                 if any(
                     _PERMISSION_GRANT_RE.search(part) or _PERMISSION_REQUEST_RE.search(part)
-                    for part in (node.text, node.description, node.hint)
+                    for part in content
                 ):
                     has_permission_grant = True
                 if _PERMISSION_CONTEXT_RE.search(text_parts):
@@ -243,7 +326,7 @@ def detect_sensitive_signals(tree: UiTree) -> tuple[str, ...]:
         child_labels = tuple(
             label
             for sibling in (node, *node.children)
-            if sibling.visible and not sibling.clickable
+            if sibling.visible and not sibling.clickable and sibling.path not in sms_content_paths
             for label in (sibling.text, sibling.description, sibling.hint)
             if label
         )
