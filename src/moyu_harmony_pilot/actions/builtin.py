@@ -7,6 +7,7 @@ from typing import Any
 
 from moyu_harmony_pilot.actions.apps import AppInstall, AppUninstall
 from moyu_harmony_pilot.actions.models import ActionContext, ActionOutcome, ActionPlugin, ActionSpec
+from moyu_harmony_pilot.actions.sms import SmsOpen
 
 
 def metric_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -108,4 +109,4 @@ class UiInspect(ActionPlugin):
 
 
 def builtin_plugins() -> tuple[ActionPlugin, ...]:
-    return DevicePing(), DeviceHealth(), UiInspect(), AppInstall(), AppUninstall()
+    return DevicePing(), DeviceHealth(), UiInspect(), AppInstall(), AppUninstall(), SmsOpen()

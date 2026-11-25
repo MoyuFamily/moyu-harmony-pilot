@@ -49,6 +49,7 @@ def test_discovery_works_offline_at_each_flag_position(argv, monkeypatch):
     else:
         assert {item["action_id"] for item in payload["data"]["plugins"]} == {
             "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall",
+            "sms.open",
         }
         assert all(item["api_version"] == 1 for item in payload["data"]["plugins"])
         assert not any(item["remote_allowed"] for item in payload["data"]["plugins"])

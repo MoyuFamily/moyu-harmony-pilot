@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from collections.abc import Mapping
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -18,9 +20,11 @@ from moyu_harmony_pilot.actions import (
 )
 from moyu_harmony_pilot.actions.ledger import ActionLedger, digest
 from moyu_harmony_pilot.actions.reports import capture_inspector, write_report
+from moyu_harmony_pilot.actions.sms import SMS_ERROR_HINTS, SMS_RESULT_SCHEMA
 from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES, validate_value
 from moyu_harmony_pilot.device import (
     DeviceConfigurationError,
+    DeviceError,
     DeviceLock,
     DeviceRegistry,
     HarmonyDevice,
@@ -31,7 +35,8 @@ from moyu_harmony_pilot.device.packages import (
     download_package,
     package_metadata,
 )
-from moyu_harmony_pilot.hdc import HdcClient, HdcTransport
+from moyu_harmony_pilot.hdc import HdcClient, HdcError, HdcTransport
+from moyu_harmony_pilot.ui import UiError
 from moyu_harmony_pilot.ui.selector import selector_from_dict
 
 DEVICE = {"--device": {"type": "string"}}
@@ -65,6 +70,38 @@ SELECTOR = {"--selector-json": {"type": "string", "required": True}}
 DIRECTION = {"type": "string", "enum": ["up", "down", "left", "right"], "default": "up"}
 
 OPERATION_SCHEMAS: dict[str, Any] = {
+    "sms": {
+        "description": "Read the current system SMS page or explicitly open the SMS app.",
+        "side_effect": "subcommand_defined",
+        "options": {},
+        "subcommands": {
+            "read": {
+                "description": "Read private SMS content and verification codes on screen.",
+                "side_effect": "readonly",
+                "private_content": True,
+                "scope": "current-screen",
+                "result_schema": SMS_RESULT_SCHEMA,
+                "options": {
+                    **DEVICE,
+                    "--limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                    "--sender": {
+                        "type": "string", "minLength": 1, "maxLength": 128,
+                        "description": "Filter by sender using a nonblank string.",
+                    },
+                    "--wait-seconds": {
+                        "type": "number", "default": 0, "minimum": 0, "maximum": 300,
+                        "description": "Wait for messages newer than the initial observation. "
+                        "Must be less than --timeout.",
+                    },
+                    "--timeout": {**TIMEOUT, "default": 30},
+                },
+            },
+            "open": {
+                "side_effect": "mutating",
+                "options": {**DEVICE, "--idempotency-key": KEY, "--timeout": TIMEOUT},
+            },
+        },
+    },
     "ocr": {
         "description": "Recognize bounded text locally using an optional offline OCR backend.",
         "side_effect": "readonly",
@@ -341,7 +378,9 @@ def run_operation(
             }
             for item in value if spec.get("repeatable") else [value]:
                 validate_value(item, schema)
-    if args.command == "apps":
+    if args.command == "sms":
+        data = _sms(args, transport=transport, cwd=cwd, env=env)
+    elif args.command == "apps":
         data = _apps(args, transport=transport, cwd=cwd, env=env)
     elif args.command == "ledger":
         data = _ledger(args, transport=transport, cwd=cwd, env=env)
@@ -395,6 +434,44 @@ def run_operation(
         "device_overheated": 5,
     }.get(data.get("status", "succeeded"), 1)
     return code, data, json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _sms(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    if args.timeout <= 0:
+        raise DeviceConfigurationError("SMS timeout must be positive.")
+    if args.operation == "read":
+        from moyu_harmony_pilot.actions.sms import read_sms, validate_sms_options
+
+        validate_sms_options(
+            limit=args.limit, sender=args.sender, wait_seconds=args.wait_seconds,
+            timeout=args.timeout,
+        )
+
+        try:
+            # Private message text belongs only in the requested result.
+            with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
+                return read_sms(
+                    _device(args, transport=transport, cwd=cwd, env=env),
+                    limit=args.limit, sender=args.sender, wait_seconds=args.wait_seconds,
+                    timeout=args.timeout,
+                )
+        except (DeviceError, HdcError, UiError) as exc:
+            raise type(exc)(
+                "SMS observation stopped.", code=exc.code, retryable=exc.retryable,
+                hint=SMS_ERROR_HINTS.get(exc.code, type(exc).default_hint),
+            ) from None
+    runner = ActionRunner(ActionRegistry.discover(env=env), state_dir=args.state_dir)
+    runner.prepare(
+        "sms.open", {}, idempotency_key=args.idempotency_key, timeout=args.timeout
+    )
+    device = _device(args, transport=transport, cwd=cwd, env=env)
+    outcome = runner.run(
+        device, "sms.open", {}, idempotency_key=args.idempotency_key, timeout=args.timeout
+    )
+    return {"alias": device.alias, "action": "sms.open", "params": {}, **outcome.to_dict()}
 
 
 def _apps(
