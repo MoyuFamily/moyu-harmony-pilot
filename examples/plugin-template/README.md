@@ -18,18 +18,18 @@
 - 动作实现 **Action API v1**。
 - 包元数据声明支持 **Python 3.11+** 及 `moyu-harmony-pilot>=0.2.0rc1,<0.3`。
 - 两个动作均声明 `min_pilot_version="0.2.0rc1"`。公共测试包、精确点击断言、上下文交互和独立检查指标 Schema 采用这一候选版本基线。
-- `requirements-test.txt` 固定 SDK 测试基线为 `0.2.0rc2`，可由匹配版本的源码或 wheel 提供。
+- `requirements-test.txt` 固定 SDK 测试基线为 `0.2.0`，可由匹配版本的源码或 wheel 提供。
 - `.github/workflows/contract.yml` 在 macOS / Linux × Python 3.11 / 3.12 矩阵下运行离线契约测试。
 
 改造成自己的插件后，请以实际跑通的 Pilot 版本与宿主机测试记录为准，及时更新依赖版本范围。
 
-CI 从 `MoyuFamily/moyu-harmony-pilot` 检出 SDK 源码并安装，使用仓库变量 `PILOT_REF` 指定版本，默认值为 `v0.2.0rc2`。升级测试基线时，同步调整该引用与 `requirements-test.txt`，并确认依赖范围覆盖目标版本。安装步骤会核对固定版本并执行 `pip check`，随后运行离线测试、两个动作的能力发现与参数预检。测试期间由公共 `offline_guard` 拦截网络、DNS 与子进程调用。
+CI 从 `MoyuFamily/moyu-harmony-pilot` 检出 SDK 源码并安装，使用仓库变量 `PILOT_REF` 指定版本，默认值为 `v0.2.0`。升级测试基线时，同步调整该引用与 `requirements-test.txt`，并确认依赖范围覆盖目标版本。安装步骤会核对固定版本并执行 `pip check`，随后运行离线测试、两个动作的能力发现与参数预检。测试期间由公共 `offline_guard` 拦截网络、DNS 与子进程调用。
 
 ---
 
 ## 2. 本地安装与契约验证
 
-在复制出来的插件目录中执行以下命令。将 `/path/to/moyu-harmony-pilot` 替换为 `v0.2.0rc2` 检出的 SDK 源码目录或从 GitHub Release 下载的对应 wheel 路径。测试全程使用临时目录与标准库 fake。
+在复制出来的插件目录中执行以下命令。将 `/path/to/moyu-harmony-pilot` 替换为 `v0.2.0` 检出的 SDK 源码目录或从 GitHub Release 下载的对应 wheel 路径。测试全程使用临时目录与标准库 fake。
 
 ```bash
 python3.11 -m venv .venv

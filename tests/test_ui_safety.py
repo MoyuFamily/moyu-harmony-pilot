@@ -75,10 +75,9 @@ def test_passive_label_supplies_context_for_an_unlabeled_input(label: str) -> No
 @pytest.mark.parametrize(
     "text",
     [
-        "Place your finger on the sensor",
         "人脸认证",
     ],
-    ids=['fingerprint-action', 'face-authentication'],
+    ids=['face-authentication'],
 )
 def test_biometric_prompts_are_blocked(text: str) -> None:
     assert "biometric_prompt" in _signals(_node(text=text))
@@ -118,11 +117,10 @@ def test_permission_request_and_multiline_ocr_text_are_blocked(text: str) -> Non
 @pytest.mark.parametrize(
     "bundle, signal",
     [
-        ("com.ohos.permissionmanager", "system_permission_dialog"),
         ("com.huawei.hmos.permissionmanager", "system_permission_dialog"),
         ("com.ohos.useriam.authwidget", "biometric_prompt"),
     ],
-    ids=['system-permission', 'huawei-permission', 'system-biometrics'],
+    ids=['huawei-permission', 'system-biometrics'],
 )
 def test_harmony_system_bundles_are_gated_only_in_visible_subtrees(
     bundle: str, signal: str

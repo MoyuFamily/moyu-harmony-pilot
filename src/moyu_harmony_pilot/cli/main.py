@@ -30,15 +30,22 @@ from moyu_harmony_pilot.cli.operations import (
 from moyu_harmony_pilot.cli.scaffold import create_plugin_project
 from moyu_harmony_pilot.cli.schema import build_cli_schema
 from moyu_harmony_pilot.device import (
+    DEFAULT_RECORD_FPS,
+    DEFAULT_RECORD_MAX_WIDTH,
     DeviceConfigurationError,
+    DeviceError,
     DeviceProfile,
     DeviceRegistry,
     DeviceSummary,
     HarmonyDevice,
+    ScreenRecorder,
     ScreenState,
     check_config_permissions,
     ensure_secure_dir,
+    find_ffmpeg,
     is_device_busy,
+    require_ffmpeg,
+    validate_recording_options,
     write_secure_text,
 )
 from moyu_harmony_pilot.hdc import (
@@ -356,6 +363,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--max-steps", type=int, default=100)
     p_run.add_argument("--dry-run", action="store_true", default=False)
+    p_run.add_argument(
+        "--record",
+        action="store_true",
+        default=False,
+        help="Record device screen to MP4 during action execution (saved in diagnostics).",
+    )
+    p_run.add_argument(
+        "--record-out",
+        default=None,
+        metavar="FILE",
+        help="Save action execution MP4 recording to FILE (implicitly enables recording).",
+    )
+    p_run.add_argument(
+        "--record-on-failure",
+        action="store_true",
+        default=False,
+        help="Keep MP4 only when the action does not succeed (implicitly enables recording).",
+    )
+    p_run.add_argument(
+        "--record-fps",
+        type=float,
+        default=DEFAULT_RECORD_FPS,
+        help="Target capture frame rate for action recording (0.5..5.0, default: 2.0).",
+    )
+    p_run.add_argument(
+        "--record-max-width",
+        type=int,
+        default=DEFAULT_RECORD_MAX_WIDTH,
+        help="Maximum pixel width for action recording MP4 (default: 720).",
+    )
 
     p_serve = subparsers.add_parser(
         "serve", parents=[shared], help="Run the outbound Pull Bridge using a private JSON config.",
@@ -566,7 +603,7 @@ def _cmd_doctor(
         }
     )
 
-    # 4. Optional OCR backends (informational in M1)
+    # 4. Optional OCR backends and ffmpeg encoder (informational)
     ocr_backends = _probe_ocr_backends()
     checks.append(
         {
@@ -578,6 +615,18 @@ def _cmd_doctor(
                 else "No optional OCR backend installed (optional extra)."
             ),
             "backends": ocr_backends,
+        }
+    )
+    ffmpeg_bin = find_ffmpeg()
+    checks.append(
+        {
+            "name": "ffmpeg_binary",
+            "status": "pass" if ffmpeg_bin else "warn",
+            "detail": (
+                str(ffmpeg_bin)
+                if ffmpeg_bin
+                else "ffmpeg not found (optional; required for MP4 screen recording)."
+            ),
         }
     )
 
@@ -862,27 +911,109 @@ def _cmd_run(
     params = _parse_action_params(args.params_json)
     registry = ActionRegistry.discover(env=env)
     runner = ActionRunner(registry, state_dir=args.state_dir)
-    runner.prepare(
+    _, _, _, prepared_seconds = runner.prepare(
         args.action, params, idempotency_key=args.idempotency_key,
         timeout=args.timeout, max_steps=args.max_steps,
     )
+    want_record = bool(args.record or args.record_out or args.record_on_failure)
+    record_max_duration = min(max(prepared_seconds + 30.0, 10.0), 600.0)
+    resolved_record_out: Path | None = None
+    if want_record:
+        resolved_record_out = validate_recording_options(
+            output_path=args.record_out,
+            fps=args.record_fps,
+            max_duration=record_max_duration,
+            max_width=args.record_max_width,
+        )
+        require_ffmpeg()
+
     devices = DeviceRegistry.load_default(args.config, cwd=cwd, env=env)
     hdc = _make_hdc_client(args=args, transport=transport, env=env)
     targets = hdc.list_targets()
     profile, _target = devices.resolve(args.device, targets, require_online=True)
     device = HarmonyDevice(hdc, profile, state_dir=args.state_dir)
-    outcome = runner.run(
-        device, args.action, params, idempotency_key=args.idempotency_key,
-        timeout=args.timeout, max_steps=args.max_steps, dry_run=args.dry_run,
-    )
+
+    recording_info: dict[str, Any] | None = None
+    recorder: ScreenRecorder | None = None
+    auto_diagnostics_target = False
+    if want_record:
+        if args.dry_run:
+            recording_info = {"saved": False, "dry_run": True}
+        else:
+            if resolved_record_out is None:
+                resolved_record_out = device.diagnostics.allocate_path(
+                    f"action_{args.action}", suffix=".mp4"
+                )
+                auto_diagnostics_target = True
+            recorder = ScreenRecorder(
+                device,
+                resolved_record_out,
+                fps=args.record_fps,
+                max_duration=record_max_duration,
+                max_width=args.record_max_width,
+            )
+            try:
+                recorder.start(capture_initial_frame=True)
+            except Exception as exc:
+                recorder = None
+                recording_info = {
+                    "saved": False,
+                    "error_code": exc.code if isinstance(exc, DeviceError) else "recording_failed",
+                    "message": str(exc),
+                }
+
+    try:
+        outcome = runner.run(
+            device, args.action, params, idempotency_key=args.idempotency_key,
+            timeout=args.timeout, max_steps=args.max_steps, dry_run=args.dry_run,
+        )
+    finally:
+        if recorder is not None:
+            try:
+                rec_result = recorder.stop(
+                    capture_final_frame=True, stopped_reason="action_completed"
+                )
+                recording_info = {"saved": True, **rec_result.to_dict()}
+            except Exception as exc:
+                recording_info = {
+                    "saved": False,
+                    "error_code": exc.code if isinstance(exc, DeviceError) else "recording_failed",
+                    "message": str(exc),
+                }
+
+    if (
+        recording_info is not None
+        and recording_info.get("saved") is True
+        and args.record_on_failure
+        and outcome.status in {"succeeded", "already_done"}
+    ):
+        Path(str(recording_info["path"])).unlink(missing_ok=True)
+        recording_info = {
+            "saved": False,
+            "discarded_on_success": True,
+            "path": None,
+            "frame_count": recording_info["frame_count"],
+            "duration_seconds": recording_info["duration_seconds"],
+        }
+    elif (
+        recording_info is not None
+        and recording_info.get("saved") is True
+        and auto_diagnostics_target
+    ):
+        device.diagnostics.prune()
+
     exit_code = {
         "succeeded": ExitCode.OK, "already_done": ExitCode.OK,
         "configuration_error": ExitCode.CONFIG_ERROR, "device_offline": ExitCode.DEVICE_OFFLINE,
         "human_required": ExitCode.HUMAN_REQUIRED, "device_overheated": ExitCode.DEVICE_OVERHEATED,
         "failed": ExitCode.FAILED, "unknown": ExitCode.FAILED,
     }[outcome.status]
-    data = {"alias": device.alias, "action": args.action, "dry_run": args.dry_run,
-            **outcome.to_dict()}
+    data: dict[str, Any] = {
+        "alias": device.alias, "action": args.action, "dry_run": args.dry_run,
+        **outcome.to_dict(),
+    }
+    if recording_info is not None:
+        data["recording"] = recording_info
     return exit_code, data, json.dumps(data, ensure_ascii=False, indent=2)
 
 

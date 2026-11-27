@@ -183,6 +183,10 @@ class DiagnosticsStore:
         clean_suffix = suffix if suffix.startswith(".") else f".{suffix}"
         return self._base_dir / f"{ts}_{safe_hint}{clean_suffix}"
 
+    def allocate_path(self, name_hint: str, *, suffix: str) -> Path:
+        """Reserve a unique timestamped path inside the `0700` diagnostics directory."""
+        return self._build_path(name_hint, suffix)
+
     def save_bytes(self, name_hint: str, data: bytes, *, suffix: str) -> Path:
         dest = self._build_path(name_hint, suffix)
         write_secure_bytes(dest, data)

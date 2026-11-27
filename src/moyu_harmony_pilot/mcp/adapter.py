@@ -15,10 +15,17 @@ from moyu_harmony_pilot.actions.models import ActionBudgetExceeded, ActionContex
 from moyu_harmony_pilot.actions.observation import capture_ocr, capture_screenshot
 from moyu_harmony_pilot.actions.sms import SMS_ERROR_HINTS
 from moyu_harmony_pilot.device import (
+    DEFAULT_RECORD_FPS,
+    DEFAULT_RECORD_MAX_DURATION,
+    DEFAULT_RECORD_MAX_WIDTH,
     DeviceConfigurationError,
     DeviceError,
     DeviceRegistry,
     HarmonyDevice,
+    RecordingSessionManager,
+    ScreenRecorder,
+    require_ffmpeg,
+    validate_recording_options,
 )
 from moyu_harmony_pilot.hdc import ConnectionState, HdcClient, HdcError
 from moyu_harmony_pilot.ui import UiError
@@ -42,9 +49,13 @@ class PilotTools:
         max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
         enable_ocr: bool = False,
         enable_sms: bool = False,
+        enable_recording: bool = False,
     ) -> None:
         InteractionSession.validate_budget(max_steps, timeout)
-        if any(type(value) is not bool for value in (inline_images, enable_ocr, enable_sms)):
+        if any(
+            type(value) is not bool
+            for value in (inline_images, enable_ocr, enable_sms, enable_recording)
+        ):
             raise DeviceConfigurationError("Observation startup switches must be boolean.")
         if type(max_image_bytes) is not int or not 1 <= max_image_bytes <= MAX_IMAGE_BYTES:
             raise DeviceConfigurationError(
@@ -61,6 +72,7 @@ class PilotTools:
         self.max_image_bytes = max_image_bytes
         self.enable_ocr = enable_ocr
         self.enable_sms = enable_sms
+        self.enable_recording = enable_recording
         self.runner = ActionRunner(actions, state_dir=state_dir)
         self._sessions: dict[str, InteractionSession] = {}
         for action_id in actions.allowed_actions:
@@ -180,6 +192,58 @@ class PilotTools:
                 hint=SMS_ERROR_HINTS.get(exc.code, type(exc).default_hint),
             ) from None
 
+    def record_start(
+        self,
+        alias: str,
+        *,
+        fps: float = DEFAULT_RECORD_FPS,
+        max_duration: float = DEFAULT_RECORD_MAX_DURATION,
+        max_width: int = DEFAULT_RECORD_MAX_WIDTH,
+        display_id: int | None = None,
+    ) -> dict[str, Any]:
+        if not self.enable_recording:
+            raise DeviceConfigurationError(
+                "Screen recording requires explicit --enable-recording startup."
+            )
+        validate_recording_options(
+            fps=fps, max_duration=max_duration, max_width=max_width, display_id=display_id
+        )
+        require_ffmpeg()
+        device = self._device(alias)
+        output_path = device.diagnostics.allocate_path(f"mcp_record_{alias}", suffix=".mp4")
+        manager = RecordingSessionManager(self.state_dir)
+        return manager.start(
+            device,
+            output_path,
+            fps=fps,
+            max_duration=max_duration,
+            max_width=max_width,
+            display_id=display_id,
+        ).to_dict()
+
+    def record_status(self, alias: str) -> dict[str, Any]:
+        if not self.enable_recording:
+            raise DeviceConfigurationError(
+                "Screen recording requires explicit --enable-recording startup."
+            )
+        device = self._device(alias)
+        manager = RecordingSessionManager(self.state_dir)
+        info = manager.status(device)
+        if info is None:
+            return {"alias": alias, "active": False}
+        return info.to_dict()
+
+    def record_stop(self, alias: str, *, timeout: float = 45.0) -> dict[str, Any]:
+        if not self.enable_recording:
+            raise DeviceConfigurationError(
+                "Screen recording requires explicit --enable-recording startup."
+            )
+        device = self._device(alias)
+        manager = RecordingSessionManager(self.state_dir)
+        result = manager.stop(device, timeout=timeout)
+        device.diagnostics.prune()
+        return result.to_dict()
+
     def run_action(
         self,
         alias: str,
@@ -188,15 +252,86 @@ class PilotTools:
         *,
         idempotency_key: str | None = None,
         timeout: float | None = None,
+        record: bool = False,
+        record_on_failure: bool = False,
     ) -> dict[str, Any]:
-        self.runner.prepare(
+        if type(record) is not bool or type(record_on_failure) is not bool:
+            raise DeviceConfigurationError("record and record_on_failure must be boolean.")
+        want_record = record or record_on_failure
+        if want_record and not self.enable_recording:
+            raise DeviceConfigurationError(
+                "Screen recording requires explicit --enable-recording startup."
+            )
+        _, _, _, prepared_seconds = self.runner.prepare(
             action_id, params, remote=True, idempotency_key=idempotency_key, timeout=timeout
         )
+        if want_record:
+            require_ffmpeg()
         device = self._device(alias)
-        outcome = self.runner.run(
-            device, action_id, params, remote=True, idempotency_key=idempotency_key, timeout=timeout
-        )
-        return {"alias": alias, "action": action_id, **outcome.to_dict()}
+
+        recorder: ScreenRecorder | None = None
+        recording_info: dict[str, Any] | None = None
+        if want_record:
+            record_dest = device.diagnostics.allocate_path(f"mcp_action_{action_id}", suffix=".mp4")
+            recorder = ScreenRecorder(
+                device,
+                record_dest,
+                fps=DEFAULT_RECORD_FPS,
+                max_duration=min(max(prepared_seconds + 30.0, 10.0), 600.0),
+                max_width=DEFAULT_RECORD_MAX_WIDTH,
+            )
+            try:
+                recorder.start(capture_initial_frame=True)
+            except Exception as exc:
+                recorder = None
+                recording_info = {
+                    "saved": False,
+                    "error_code": exc.code if isinstance(exc, DeviceError) else "recording_failed",
+                    "message": str(exc),
+                }
+
+        try:
+            outcome = self.runner.run(
+                device, action_id, params, remote=True, idempotency_key=idempotency_key,
+                timeout=timeout,
+            )
+        finally:
+            if recorder is not None:
+                try:
+                    rec_result = recorder.stop(
+                        capture_final_frame=True, stopped_reason="action_completed"
+                    )
+                    recording_info = {"saved": True, **rec_result.to_dict()}
+                except Exception as exc:
+                    recording_info = {
+                        "saved": False,
+                        "error_code": (
+                            exc.code if isinstance(exc, DeviceError) else "recording_failed"
+                        ),
+                        "message": str(exc),
+                    }
+
+        if (
+            recording_info is not None
+            and recording_info.get("saved") is True
+            and record_on_failure
+            and outcome.status in {"succeeded", "already_done"}
+        ):
+            Path(str(recording_info["path"])).unlink(missing_ok=True)
+            recording_info = {
+                "saved": False,
+                "discarded_on_success": True,
+                "path": None,
+                "frame_count": recording_info["frame_count"],
+                "duration_seconds": recording_info["duration_seconds"],
+            }
+        elif recording_info is not None and recording_info.get("saved") is True:
+            device.diagnostics.prune()
+
+        payload: dict[str, Any] = {"alias": alias, "action": action_id, **outcome.to_dict()}
+        if recording_info is not None:
+            payload["recording"] = recording_info
+        return payload
 
     def _session(self, alias: str) -> InteractionSession:
         if not self.local_lab:

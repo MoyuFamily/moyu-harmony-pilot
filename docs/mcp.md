@@ -110,6 +110,16 @@ def capture_ocr(
 ) -> dict[str, Any]: ...
 ```
 
+## 本地录屏（验收与调试）
+
+通过 `--enable-recording` 显式开启本地录屏能力（依赖宿主机 `ffmpeg`）：
+
+```bash
+harmony-pilot-mcp --config devices.local.json --enable-recording --allow-action device.health
+```
+
+开启后会额外注册 `record_start`、`record_status`、`record_stop` 三个工具，并允许在 `run_action` 中传入 `record=true` 或 `record_on_failure=true`。所有生成的 MP4 均受限于本地私有 `diagnostics/` 目录（权限 `0600` 并沿用滚动清理），MCP 仅返回路径与时长/帧率等元数据，不向模型回传视频字节流。
+
 ---
 
 ## 本地探索模式（Local Lab Mode）

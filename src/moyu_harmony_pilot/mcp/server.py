@@ -205,6 +205,40 @@ def create_server(adapter: PilotTools) -> "MCPServer":
                 )
             )
 
+    if adapter.enable_recording:
+
+        @server.tool(annotations=readonly)
+        async def record_start(
+            alias: str,
+            fps: Annotated[float, Field(ge=0.5, le=5.0)] = 2.0,
+            max_duration: Annotated[float, Field(ge=1.0, le=600.0)] = 120.0,
+            max_width: Annotated[int, Field(ge=1, le=8192, strict=True)] = 720,
+            display_id: Annotated[int, Field(ge=0, strict=True)] | None = None,
+        ) -> CallToolResult:
+            """Start a detached local MP4 screen recording stored under private diagnostics."""
+            return invoke(
+                lambda: adapter.record_start(
+                    alias,
+                    fps=fps,
+                    max_duration=max_duration,
+                    max_width=max_width,
+                    display_id=display_id,
+                )
+            )
+
+        @server.tool(annotations=readonly)
+        async def record_status(alias: str) -> CallToolResult:
+            """Inspect whether a background screen recording session is active for the device."""
+            return invoke(lambda: adapter.record_status(alias))
+
+        @server.tool(annotations=readonly)
+        async def record_stop(
+            alias: str,
+            timeout: Annotated[float, Field(gt=0, le=3600)] = 45.0,
+        ) -> CallToolResult:
+            """Stop the active screen recording session and return local MP4 metadata."""
+            return invoke(lambda: adapter.record_stop(alias, timeout=timeout))
+
     @server.tool(annotations=mutating)
     async def run_action(
         alias: str,
@@ -212,11 +246,19 @@ def create_server(adapter: PilotTools) -> "MCPServer":
         params: dict[str, Any],
         idempotency_key: str | None = None,
         timeout: float | None = None,
+        record: Annotated[bool, Field(strict=True)] = False,
+        record_on_failure: Annotated[bool, Field(strict=True)] = False,
     ) -> CallToolResult:
         """Run an allowlisted action through the shared lock, ledger and safety gates."""
         return invoke(
             lambda: adapter.run_action(
-                alias, action_id, params, idempotency_key=idempotency_key, timeout=timeout
+                alias,
+                action_id,
+                params,
+                idempotency_key=idempotency_key,
+                timeout=timeout,
+                record=record,
+                record_on_failure=record_on_failure,
             )
         )
 
@@ -304,6 +346,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--enable-sms", action="store_true",
         help="Expose read-only private SMS content from the current system SMS screen.",
     )
+    parser.add_argument(
+        "--enable-recording", action="store_true",
+        help="Expose local private MP4 screen recording tools and action recording.",
+    )
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--timeout", type=float, default=60)
     args = parser.parse_args(argv)
@@ -327,6 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_image_bytes=args.max_image_bytes,
                 enable_ocr=args.enable_ocr,
                 enable_sms=args.enable_sms,
+                enable_recording=args.enable_recording,
             )
             server = create_server(adapter)
         server.run(transport="stdio")

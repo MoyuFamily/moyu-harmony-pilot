@@ -36,9 +36,12 @@ def build_cli_schema() -> dict[str, Any]:
                 "--max-image-bytes": {"type": "integer", "default": 2097152,
                                       "minimum": 1, "maximum": 16777216},
                 "--enable-ocr": {"type": "boolean", "default": False},
+                "--enable-sms": {"type": "boolean", "default": False},
+                "--enable-recording": {"type": "boolean", "default": False},
             },
             "screenshot_inline_requires_startup_opt_in": True,
             "ocr_requires_startup_opt_in": True,
+            "recording_requires_startup_opt_in": True,
         },
         "action_contract": {
             "api_version": ACTION_API_VERSION,
@@ -302,6 +305,23 @@ def build_cli_schema() -> dict[str, Any]:
                                   "description": (
                                       "Validate selection and parameters using device enumeration."
                                   )},
+                    "--record": {"type": "boolean", "default": False,
+                                 "description": (
+                                     "Record device screen to MP4 during action execution."
+                                 )},
+                    "--record-out": {"type": "string",
+                                     "description": (
+                                         "Save action recording MP4 to FILE (enables recording)."
+                                     )},
+                    "--record-on-failure": {"type": "boolean", "default": False,
+                                            "description": (
+                                                "Keep recorded MP4 only when action does not "
+                                                "succeed (enables recording)."
+                                            )},
+                    "--record-fps": {"type": "number", "default": 2.0,
+                                     "minimum": 0.5, "maximum": 5.0},
+                    "--record-max-width": {"type": "integer", "default": 720,
+                                           "minimum": 1, "maximum": 8192},
                 },
                 "examples": ["harmony-pilot run --device harmony-01 --action device.health --json"],
             },

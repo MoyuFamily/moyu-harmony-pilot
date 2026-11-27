@@ -86,6 +86,39 @@ harmony-pilot report --input ./saved-result.json --out .state/diagnostics/run.ht
 
 检查页是自包含的本地 HTML，截图内嵌，可点击元素框查看属性并按文字筛选。捕获前后校验布局哈希。执行报告支持保存的 JSON 信封和账本记录。文件采用 `0600` 权限，截图、页面文字和报告应保留在本地私有目录。
 
+## 产品验收与调试录屏
+
+由于 HarmonyOS NEXT 官方命令行不内置 Android 风格的 `screenrecord`，Pilot 基于官方 `snapshot_display` 按实际时间戳连续采帧，并通过宿主机 `ffmpeg` 合成 1:1 实时节奏的标准 H.264 MP4（`yuv420p`、`+faststart`）。采帧不占用 `uitest` 独占设备锁，可与交互操作和 Action 执行并发运行，核心 Python 依赖仍保持零第三方包。
+
+### 方式一：独立会话录屏（适合手工验收与多命令调试）
+
+```bash
+# 后台启动录屏（不阻塞后续 dump-ui / interact / run 等命令）
+harmony-pilot record start --device harmony-01 --out .state/diagnostics/demo.mp4 --fps 2 --max-duration 120 --json
+
+# 查询录屏状态
+harmony-pilot record status --device harmony-01 --json
+
+# 停止录屏并封装 MP4（自动清理临时帧与设备端 /data/local/tmp/ 临时文件）
+harmony-pilot record stop --device harmony-01 --json
+
+# 或直接前台定时录一段（支持 Ctrl+C 提前结束并正常封装）
+harmony-pilot record capture --device harmony-01 --duration 10 --out .state/diagnostics/clip.mp4 --json
+```
+
+### 方式二：跟随动作执行自动录屏（适合自动化验收与失败留证）
+
+```bash
+# 全程录屏并自动保存到 .state/diagnostics/
+harmony-pilot run --device harmony-01 --action device.health --record --json
+
+# 指定输出路径，或仅在动作未成功时保留录像（成功时自动清理）
+harmony-pilot run --device harmony-01 --action device.health --record-out .state/diagnostics/run.mp4 --record-on-failure --json
+```
+
+- 依赖与自检：需要宿主机已安装 `ffmpeg`（如 macOS 执行 `brew install ffmpeg`），`harmony-pilot doctor` 会报告 `ffmpeg_binary` 检测状态；缺失时录屏命令会在触达设备前快速报错（退出码 `2`）。
+- 安全与隐私约束：录屏仅限本地执行；后台会话元数据与进程参数不落盘或暴露真实设备串号；最终 MP4 文件强制 `0600` 权限，最长录制时长受 `--max-duration`（上限 600 秒）保护，录制结束自动清理临时帧目录。
+
 ## 验证范围
 
 新增离线测试覆盖 HAP/APP 安装、内含 HSP 的多模块展开、卸载、防重复提交、安装已生效但回执超时、相同版本更新不确定、下载校验和原子替换、异常包拒绝与临时目录清理、旧账本迁移、中文及特殊字符参数转义、等待预算和过滤透传、并发子进程重叠执行、单子进程崩溃与超时、HTML 转义和文件权限。

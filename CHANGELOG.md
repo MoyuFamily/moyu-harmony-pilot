@@ -4,6 +4,21 @@
 
 ---
 
+## [0.2.0] - 2026-11-27
+
+正式发布 `0.2.0` 版本：包含 `0.2.0rc1` / `0.2.0rc2` 的全部插件生态、应用管理、OCR/内联截图、短信读取与发布工程能力，并新增面向产品验收与调试的本地 MP4 录屏能力。核心默认依赖仍保持为空（仅依赖 Python 3.11+ 标准库）。
+
+- **本地 MP4 录屏（方式一：独立会话 / 定时录屏）**：基于官方 `snapshot_display` 按单调时间戳连续采帧，并通过宿主机 `ffmpeg` 合成 1:1 实时节奏的 H.264 MP4（`+faststart`、`0600` 权限）。新增 `harmony-pilot record start / status / stop / capture` 命令，采帧不占用 `DeviceLock`，可与 `dump-ui`、`interact`、`run` 并发运行；后台会话经 `stdin` 传递串号，不落盘或暴露真实设备串号，结束后自动清理本地临时帧与设备端 `/data/local/tmp/moyu_pilot_*`。
+- **跟随动作自动录屏（方式二）**：`harmony-pilot run` 新增 `--record`、`--record-out`、`--record-on-failure`、`--record-fps`、`--record-max-width`，支持全程录制或仅在动作未成功时保留录像，录制异常不掩盖原动作状态与幂等账本；`doctor` 新增信息性 `ffmpeg_binary` 自检，`schema` 同步自描述。
+- **MCP 可选录屏工具**：`harmony-pilot-mcp` 新增显式 `--enable-recording` 启动开关，暴露 `record_start` / `record_status` / `record_stop` 及 `run_action(record=..., record_on_failure=...)`，输出文件严格限定在本地 `0700` `diagnostics/` 目录，不向模型回传视频字节流，默认 Safe Mode 保持不变。
+- **核心离线测试套件治理**：收口并强制校验核心套件规模上限（300 项）与代表性参数化上限，保持全量离线运行快速稳定。
+- 插件模板固定测试基线与 CI 默认标签升级至 `0.2.0`，最低兼容版本 `min_pilot_version` 与依赖下界保持 `0.2.0rc1`。
+
+### 验收范围
+
+- 离线全量测试、严格类型检查（`mypy --strict`）、`ruff` 与源码包/wheel 离线构建及 `twine check --strict` 全部通过。
+- HarmonyOS 6.1（API 24）真机完成只读端到端录屏实测：方式一后台录屏并发 `dump-ui`、方式二 `run --action device.health --record-out` 均产出 `ffprobe` 校验通过的 H.264 MP4，结束后设备 `/data/local/tmp/moyu_pilot_*` 为 0。
+
 ## [0.2.0rc2] - 2026-11-25
 
 新增系统短信读取，支持通过本地 CLI、SSH 或显式开启的 MCP 获取当前可见消息，核心仅依赖 Python 标准库。

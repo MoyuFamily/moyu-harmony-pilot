@@ -298,6 +298,59 @@ OPERATION_SCHEMAS: dict[str, Any] = {
         "side_effect": "local_file",
         "options": {"--input": OUT, "--out": OUT},
     },
+    "record": {
+        "description": "Record device screen to local MP4 via snapshot_display and host ffmpeg.",
+        "side_effect": "subcommand_defined",
+        "local_only": True,
+        "options": {},
+        "subcommands": {
+            "start": {
+                "description": "Start a detached background screen recording session.",
+                "side_effect": "readonly",
+                "options": {
+                    **DEVICE,
+                    "--out": OUT,
+                    "--fps": {"type": "number", "default": 2.0, "minimum": 0.5, "maximum": 5.0},
+                    "--max-duration": {
+                        "type": "number", "default": 120.0, "minimum": 1.0, "maximum": 600.0,
+                    },
+                    "--max-width": {
+                        "type": "integer", "default": 720, "minimum": 1, "maximum": 8192,
+                    },
+                    "--display-id": {"type": "integer", "minimum": 0},
+                },
+            },
+            "stop": {
+                "description": "Stop an active recording session and finalize its MP4 file.",
+                "side_effect": "readonly",
+                "options": {
+                    **DEVICE,
+                    "--timeout": {**TIMEOUT, "default": 45},
+                },
+            },
+            "status": {
+                "description": "Inspect whether a recording session is active for the device.",
+                "side_effect": "readonly",
+                "options": {**DEVICE},
+            },
+            "capture": {
+                "description": "Record the device screen for a fixed duration in the foreground.",
+                "side_effect": "readonly",
+                "options": {
+                    **DEVICE,
+                    "--out": OUT,
+                    "--duration": {
+                        "type": "number", "required": True, "minimum": 1.0, "maximum": 600.0,
+                    },
+                    "--fps": {"type": "number", "default": 2.0, "minimum": 0.5, "maximum": 5.0},
+                    "--max-width": {
+                        "type": "integer", "default": 720, "minimum": 1, "maximum": 8192,
+                    },
+                    "--display-id": {"type": "integer", "minimum": 0},
+                },
+            },
+        },
+    },
 }
 
 
@@ -380,6 +433,8 @@ def run_operation(
                 validate_value(item, schema)
     if args.command == "sms":
         data = _sms(args, transport=transport, cwd=cwd, env=env)
+    elif args.command == "record":
+        data = _record(args, transport=transport, cwd=cwd, env=env)
     elif args.command == "apps":
         data = _apps(args, transport=transport, cwd=cwd, env=env)
     elif args.command == "ledger":
@@ -646,3 +701,80 @@ def _interact(args: argparse.Namespace, device: HarmonyDevice) -> dict[str, Any]
         method = session.click_ref if operation == "click" else session.long_click_ref
         return method(args.ref, **kwargs)
     return session.home(**kwargs) if operation == "home" else session.back(**kwargs)
+
+
+def _record(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    from moyu_harmony_pilot.device import (
+        RecordingSessionManager,
+        ScreenRecorder,
+        require_ffmpeg,
+        validate_recording_options,
+    )
+
+    if args.operation == "start":
+        validate_recording_options(
+            output_path=args.out,
+            fps=args.fps,
+            max_duration=args.max_duration,
+            max_width=args.max_width,
+            display_id=args.display_id,
+        )
+        require_ffmpeg()
+        device = _device(args, transport=transport, cwd=cwd, env=env)
+        manager = RecordingSessionManager(args.state_dir)
+        info = manager.start(
+            device,
+            args.out,
+            fps=args.fps,
+            max_duration=args.max_duration,
+            max_width=args.max_width,
+            display_id=args.display_id,
+            hdc_path=args.hdc_path,
+        )
+        return info.to_dict()
+
+    if args.operation == "stop":
+        device = _device(args, transport=transport, cwd=cwd, env=env)
+        manager = RecordingSessionManager(args.state_dir)
+        return manager.stop(device, timeout=args.timeout).to_dict()
+
+    if args.operation == "status":
+        device = _device(args, transport=transport, cwd=cwd, env=env)
+        manager = RecordingSessionManager(args.state_dir)
+        active_info = manager.status(device)
+        if active_info is None:
+            return {"alias": device.alias, "active": False}
+        return active_info.to_dict()
+
+    validate_recording_options(
+        output_path=args.out,
+        fps=args.fps,
+        max_duration=args.duration,
+        max_width=args.max_width,
+        display_id=args.display_id,
+    )
+    require_ffmpeg()
+    device = _device(args, transport=transport, cwd=cwd, env=env)
+    device.assert_thermal_safe(timeout=10.0)
+    recorder = ScreenRecorder(
+        device,
+        args.out,
+        fps=args.fps,
+        max_duration=args.duration,
+        max_width=args.max_width,
+        display_id=args.display_id,
+    )
+    recorder.start(capture_initial_frame=True)
+    stopped_reason = "duration_limit"
+    try:
+        recorder._stop_event.wait(timeout=float(args.duration) + 1.0)
+    except KeyboardInterrupt:
+        stopped_reason = "interrupted"
+    result = recorder.stop(
+        capture_final_frame=(stopped_reason == "interrupted"),
+        stopped_reason=stopped_reason,
+    )
+    return result.to_dict()

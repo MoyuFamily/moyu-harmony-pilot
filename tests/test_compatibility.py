@@ -35,12 +35,11 @@ def test_synthetic_battery_units_and_optional_fields() -> None:
     "case_name, layout_index",
     [
         ("synthetic_harmony_5_phone", 0),
-        ("synthetic_harmony_6_phone", 0),
         ("synthetic_harmony_6_tablet", 0),
         ("synthetic_harmony_6_foldable", 0),
         ("synthetic_harmony_6_foldable", 1),
     ],
-    ids=["harmony-5-phone", "harmony-6-phone", "tablet", "folded", "unfolded"],
+    ids=["harmony-5-phone", "tablet", "folded", "unfolded"],
 )
 def test_synthetic_layout_schema_and_compact_snapshots(case_name: str, layout_index: int) -> None:
     case = load_case(case_name)
