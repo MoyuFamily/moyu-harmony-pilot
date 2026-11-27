@@ -1,6 +1,6 @@
-# 应用管理、交互与运行诊断
+# 应用管理、文件导出、交互与运行诊断
 
-这些能力基于官方 `hdc`、`bm`、`aa`、`uitest` 工具链。核心依赖保持为 Python 标准库。示例中的 `harmony-01` 是设备别名。
+这些能力基于官方 `hdc`、`bm`、`aa`、`uitest`、`mediatool` 工具链。核心依赖保持为 Python 标准库。示例中的 `harmony-01` 是设备别名。
 
 ## 应用查询与部署
 
@@ -54,6 +54,73 @@ harmony-pilot ledger prune --older-than-days 90 --json
 ```
 
 `resolve` 记录成功核验和备注，并继续保留幂等键。`release` 仅面向本机人工操作，在持物理设备锁并核对原请求参数与插件版本后，释放 `submitting` / `unknown` 预留并向 `resolutions` 表写入不可变 `released` 审计记录，允许随后复用原幂等键重试；已确认 `succeeded` / `already_done` 的记录不可释放。`prune` 只清理已成功结案的历史，保留 `submitting` 和 `unknown`。裁剪后的历史幂等键将失去防重记录，应按业务防重期限设置保留天数。账本 v1 会在事务中自动迁移，保留原有记录。
+
+## 手机文件查询与导出
+
+通过本地 CLI 或 Python SDK 查询图库媒体，并将设备上的单个文件导出到宿主机。图片、视频、音频和文档均按原始字节传输，每次导出一个文件。
+
+### 按图库名称查询
+
+`files query` 使用设备提供的 `mediatool query NAME -u` 查询媒体 URI。将示例名称替换为图库中的文件名，导出时使用查询返回的 URI。
+
+```bash
+harmony-pilot files query --device harmony-01 --name '旅行照片.jpg' --limit 100 --timeout 30 --json
+```
+
+`--name` 为必填参数。`--limit` 默认为 100，取值 1–1000。`--timeout` 默认为 30 秒。成功时 JSON 信封的 `data` 包含以下字段。
+
+| 字段 | 含义 |
+| --- | --- |
+| `alias` | 设备别名 |
+| `name` | 本次查询的名称 |
+| `uris` | 按字典序排序、受 `--limit` 限制的媒体 URI 列表 |
+| `count` | 本次返回的 URI 数量 |
+| `total` | 匹配的 URI 总数 |
+| `truncated` | 是否因条数上限而截断结果 |
+
+### 导出到指定本地文件
+
+`files export` 的 `--source` 接受设备上的绝对文件路径或 `file://media/Photo/<id>[/...]` 媒体 URI，`--out` 指定包含文件名的本地目标路径。以下示例中的媒体 ID 和设备路径按实际文件填写。
+
+```bash
+# 使用查询返回的 URI 导出图片或视频
+harmony-pilot files export --device harmony-01 --source 'file://media/Photo/100' --out .state/exports/photo.jpg --timeout 300 --json
+harmony-pilot files export --device harmony-01 --source 'file://media/Photo/101' --out .state/exports/video.mp4 --json
+
+# 使用设备绝对文件路径导出普通文件
+harmony-pilot files export --device harmony-01 --source /data/local/tmp/example.pdf --out .state/exports/example.pdf --json
+
+# 显式授权更新已有目标文件
+harmony-pilot files export --device harmony-01 --source 'file://media/Photo/100' --out .state/exports/photo.jpg --overwrite --json
+```
+
+目标默认拒绝覆盖已有文件。传入 `--overwrite` 后，导出成功时原子替换目标，接收或校验失败时保留旧文件。导出文件权限为 `0600`，本地临时目录权限为 `0700`。`--timeout` 默认为 300 秒，上限为 3600 秒。
+
+发布新文件时优先使用硬链接。目标卷缺少硬链接支持时，使用独占创建并复制已校验的内容。该兼容路径在复制期间会出现目标文件，复制失败时清理本次创建的目标。
+
+普通文件通过 `hdc file recv` 拉取。媒体 URI，以及 `/storage/media/local/files/Photo/...` 或 `/storage/media/<UID>/local/files/Photo/...` 路径，先由 `mediatool recv` 导出到设备端受管临时文件，再通过 `hdc` 拉取。设备临时文件在 `finally` 阶段清理，清理另有 10 秒预算。
+
+成功时 JSON 信封的 `data` 包含以下字段。
+
+| 字段 | 含义 |
+| --- | --- |
+| `alias` | 设备别名 |
+| `source` | 本次导出的设备文件路径或媒体 URI |
+| `path` | 宿主机上的导出文件路径 |
+| `size_bytes` | 导出文件的字节数 |
+| `sha256` | 导出文件的 SHA-256 摘要 |
+| `transport` | `hdc` 表示普通文件拉取，`mediatool` 表示经媒体工具导出后拉取 |
+| `cleanup_pending` | 本次待清理项，通常为空数组。每项的 `location` 为 `device` 或 `host`，`path` 为对应路径 |
+
+完成导出后的清理异常通过 `cleanup_pending` 返回。设备恢复连接或宿主机恢复写入权限后，可按返回的位置和路径清理这些文件。
+
+### 设备权限与 SDK 调用
+
+图库查询和媒体导出需要设备提供官方 `mediatool`，可访问范围由设备当前用户和权限决定。隐藏相册及云端尚未下载媒体的可访问性，以官方工具在该设备上的实际返回为准。
+
+CLI 调用期间持有单设备锁。Python SDK 提供 `HarmonyDevice.query_media()` 与 `HarmonyDevice.export_file()`，调用方通过 `device.acquire_lock()` 持锁后调用。文件保存在执行命令或 SDK 的宿主机上。
+
+外部 Action 插件可调用上述 SDK。MCP 通过 `--allow-action` 显式授权插件动作，Bridge 通过逐设备 `allowed_actions` 授权，插件接入遵循现有参数契约、回执和敏感信息边界。
 
 ## 本地 Agent 交互
 
@@ -120,6 +187,8 @@ harmony-pilot run --device harmony-01 --action device.health --record-out .state
 - 安全与隐私约束：录屏仅限本地执行；后台会话元数据与进程参数不落盘或暴露真实设备串号；最终 MP4 文件强制 `0600` 权限，最长录制时长受 `--max-duration`（上限 600 秒）保护，录制结束自动清理临时帧目录。
 
 ## 验证范围
+
+文件查询与导出当前为离线实现，普通文件、图库图片和视频的真机验收待完成。
 
 新增离线测试覆盖 HAP/APP 安装、内含 HSP 的多模块展开、卸载、防重复提交、安装已生效但回执超时、相同版本更新不确定、下载校验和原子替换、异常包拒绝与临时目录清理、旧账本迁移、中文及特殊字符参数转义、等待预算和过滤透传、并发子进程重叠执行、单子进程崩溃与超时、HTML 转义和文件权限。
 

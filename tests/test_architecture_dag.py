@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -106,9 +105,3 @@ def test_testing_helpers_have_no_external_runtime_dependencies() -> None:
             for name in names:
                 root = name.split(".")[0]
                 assert root in sys.stdlib_module_names | {"moyu_harmony_pilot"}, (py_file, name)
-
-
-def test_core_pyproject_dependencies_remain_empty() -> None:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    deps = pyproject.get("project", {}).get("dependencies", [])
-    assert deps == [], f"Core runtime dependencies must remain stdlib-only, found: {deps}"

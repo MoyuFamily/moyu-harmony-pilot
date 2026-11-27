@@ -14,6 +14,7 @@
 - **独立运行、生态解耦**：单机 CLI / Python SDK 开箱即用；远程派发采用公开、服务端无关的 HTTP Pull 协议，不绑定任何特定云端平台或调度器。
 - **默认安全（Fail-Closed）与插件化**：具体业务流程留在外部 `ActionPlugin` 插件中维护；远端调度侧只能触发宿主机白名单显式放行的动作，绝不开放任意 Shell 透传。
 - **原生适配 AI Agent**：提供统一 JSON 信封与稳定退出码（`0`–`6`）、低 Token 紧凑语义快照（`@e1` / `@e2` 引用 + `layout_hash`）、自描述契约（`harmony-pilot schema`）、防失控护栏、标准 Agent Skill 与可选轻量 MCP 适配层。
+- **手机文件查询与导出** — 按图库名称查询媒体 URI，通过本地 CLI / Python SDK 将图片、视频、音频和文档按原始字节导出到指定文件。
 - **单向分层架构**：内部包按 `hdc → ui → device / vision → actions → bridge / cli / mcp` 严格单向依赖，并由自动化架构测试守护，便于后期按需拆分纯驱动 SDK。
 
 **长期优先方向**：持续降低外部插件的开发、测试、接入与维护成本，让开发侧 Agent 能依据公开契约和示例协作，让运行侧 Agent 能发现能力、理解结果并安全处理异常与人工接管。后续设计和变更以此作为取舍与验收依据，同时坚守安全、幂等和公开仓库边界。现有能力及待办分别见下方项目进展与[路线图](docs/roadmap.md)。
@@ -58,7 +59,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 ### 插件与扩展
 
 - **[创建与离线验证业务插件](docs/actions.md#从离线工程开始)** — 使用 `harmony-pilot plugins init ../team-pilot --namespace team` 生成独立工程，安装后运行 `python -m tests`，再逐步替换业务实现和测试场景。
-- **[应用管理、交互与运行诊断](docs/app-management.md)** — HAP 下载部署、应用查询、引用式输入、账本对账、多设备执行与离线可视化检查和报告。
+- **[应用管理、文件导出、交互与运行诊断](docs/app-management.md)** — HAP 下载部署、应用查询、图库查询与单文件导出、引用式输入、账本对账、多设备执行与离线可视化检查和报告。
 - **[系统短信与验证码读取](docs/sms.md)** — 读取当前短信、等待新消息，以及通过 SSH 或显式启用的 MCP 工具获取验证码。
 - **[Action 插件与本地执行](docs/actions.md)** — 插件发现机制、参数与回执 Schema、执行预算、SQLite 幂等账本、视觉标注/OCR 与受控交互。
 - **[独立插件模板](examples/plugin-template/README.md)** — 开箱即用的独立插件工程模板、API 兼容性声明、离线契约测试与 CI 配置。

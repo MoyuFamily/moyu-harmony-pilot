@@ -15,6 +15,12 @@ from moyu_harmony_pilot.device.diagnostics import (
     resize_image_max_width,
 )
 from moyu_harmony_pilot.device.errors import DeviceConfigurationError, DeviceOverheatedError
+from moyu_harmony_pilot.device.files import (
+    FileExportResult,
+    MediaQueryResult,
+    export_file,
+    query_media,
+)
 from moyu_harmony_pilot.device.lock import DeviceLock, is_device_busy
 from moyu_harmony_pilot.device.models import (
     BatteryTelemetry,
@@ -306,6 +312,22 @@ class HarmonyDevice:
             timeout=timeout,
         )
         return parse_foreground_window(result.stdout)
+
+    def query_media(
+        self, name: str, *, limit: int = 100, timeout: float = 30.0
+    ) -> MediaQueryResult:
+        """Find gallery photo/video URIs by display name under the caller's device lock."""
+        return query_media(self._hdc, self._profile.serial, name, limit=limit, timeout=timeout)
+
+    def export_file(
+        self, source: str, output_path: str | Path, *,
+        overwrite: bool = False, timeout: float = 300.0,
+    ) -> FileExportResult:
+        """Export one file under the caller's device lock, preserving its original bytes."""
+        return export_file(
+            self._hdc, self._profile.serial, source, output_path,
+            overwrite=overwrite, timeout=timeout,
+        )
 
     def screenshot(
         self,

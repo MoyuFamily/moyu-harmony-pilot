@@ -30,6 +30,7 @@ from moyu_harmony_pilot.device import (
     HarmonyDevice,
     ensure_secure_dir,
 )
+from moyu_harmony_pilot.device.files import validate_file_export, validate_media_query
 from moyu_harmony_pilot.device.packages import (
     PACKAGE_SUFFIXES,
     download_package,
@@ -70,6 +71,94 @@ SELECTOR = {"--selector-json": {"type": "string", "required": True}}
 DIRECTION = {"type": "string", "enum": ["up", "down", "left", "right"], "default": "up"}
 
 OPERATION_SCHEMAS: dict[str, Any] = {
+    "files": {
+        "description": "Find gallery photos/videos and export individual device files locally.",
+        "side_effect": "subcommand_defined",
+        "local_only": True,
+        "private_content": True,
+        "options": {},
+        "subcommands": {
+            "query": {
+                "description": "Find gallery media URIs by exact filename using mediatool.",
+                "side_effect": "readonly",
+                "private_content": True,
+                "options": {
+                    **DEVICE,
+                    "--name": {
+                        "type": "string", "required": True, "minLength": 1, "maxLength": 255,
+                        "description": "Gallery display name including its extension.",
+                    },
+                    "--limit": {
+                        "type": "integer", "default": 100, "minimum": 1, "maximum": 1000,
+                    },
+                    "--timeout": {**TIMEOUT, "default": 30},
+                },
+                "result_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["alias", "name", "uris", "count", "total", "truncated"],
+                    "properties": {
+                        "alias": {"type": "string"},
+                        "name": {"type": "string"},
+                        "uris": {"type": "array", "items": {"type": "string"}},
+                        "count": {"type": "integer", "minimum": 0},
+                        "total": {"type": "integer", "minimum": 0},
+                        "truncated": {"type": "boolean"},
+                    },
+                },
+            },
+            "export": {
+                "description": "Export one file through hdc or gallery mediatool staging.",
+                "side_effect": "local_file",
+                "private_content": True,
+                "options": {
+                    **DEVICE,
+                    "--source": {
+                        "type": "string", "required": True, "minLength": 1, "maxLength": 4096,
+                        "description": "Absolute device file path or file://media/Photo/<id> URI.",
+                    },
+                    "--out": {
+                        **OUT, "minLength": 1, "maxLength": 4096,
+                        "description": "Destination local filename.",
+                    },
+                    "--overwrite": {"type": "boolean", "default": False},
+                    "--timeout": {
+                        **TIMEOUT, "default": 300,
+                        "description": "Transfer/checksum budget in seconds, plus up to 10 "
+                        "seconds for gallery temporary-file cleanup.",
+                    },
+                },
+                "result_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "alias", "source", "path", "size_bytes", "sha256", "transport",
+                        "cleanup_pending",
+                    ],
+                    "properties": {
+                        "alias": {"type": "string"},
+                        "source": {"type": "string"},
+                        "path": {"type": "string"},
+                        "size_bytes": {"type": "integer", "minimum": 0},
+                        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                        "transport": {"type": "string", "enum": ["hdc", "mediatool"]},
+                        "cleanup_pending": {
+                            "type": "array",
+                            "items": {
+                                "type": "object", "additionalProperties": False,
+                                "required": ["location", "path"],
+                                "properties": {
+                                    "location": {"type": "string", "enum": ["device", "host"]},
+                                    "path": {"type": "string"},
+                                },
+                            },
+                            "description": "Managed temporary paths requiring cleanup.",
+                        },
+                    },
+                },
+            },
+        },
+    },
     "sms": {
         "description": "Read the current system SMS page or explicitly open the SMS app.",
         "side_effect": "subcommand_defined",
@@ -431,7 +520,9 @@ def run_operation(
             }
             for item in value if spec.get("repeatable") else [value]:
                 validate_value(item, schema)
-    if args.command == "sms":
+    if args.command == "files":
+        data = _files(args, transport=transport, cwd=cwd, env=env)
+    elif args.command == "sms":
         data = _sms(args, transport=transport, cwd=cwd, env=env)
     elif args.command == "record":
         data = _record(args, transport=transport, cwd=cwd, env=env)
@@ -489,6 +580,27 @@ def run_operation(
         "device_overheated": 5,
     }.get(data.get("status", "succeeded"), 1)
     return code, data, json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _files(
+    args: argparse.Namespace, *, transport: HdcTransport | None,
+    cwd: Path | None, env: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    if args.operation == "query":
+        validate_media_query(args.name, limit=args.limit, timeout=args.timeout)
+    else:
+        validate_file_export(
+            args.source, args.out, overwrite=args.overwrite, timeout=args.timeout
+        )
+    device = _device(args, transport=transport, cwd=cwd, env=env)
+    with device.acquire_lock():
+        if args.operation == "query":
+            result = device.query_media(args.name, limit=args.limit, timeout=args.timeout).to_dict()
+        else:
+            result = device.export_file(
+                args.source, args.out, overwrite=args.overwrite, timeout=args.timeout
+            ).to_dict()
+    return {"alias": device.alias, **result}
 
 
 def _sms(

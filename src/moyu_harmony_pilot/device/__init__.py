@@ -17,6 +17,7 @@ from moyu_harmony_pilot.device.errors import (
     HumanRequiredError,
     UnknownDeviceAliasError,
 )
+from moyu_harmony_pilot.device.files import FileExportResult, MediaQueryResult
 from moyu_harmony_pilot.device.lock import (
     DeviceLock,
     ensure_secure_dir,
@@ -84,11 +85,13 @@ __all__ = [
     "DeviceRegistry",
     "DeviceSummary",
     "DiagnosticsStore",
+    "FileExportResult",
     "ForegroundWindow",
     "HarmonyDevice",
     "HumanRequiredError",
     "MAX_RECORD_DURATION",
     "MAX_RECORD_FPS",
+    "MediaQueryResult",
     "MIN_RECORD_DURATION",
     "MIN_RECORD_FPS",
     "PowerTelemetry",

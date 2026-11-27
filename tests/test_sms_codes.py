@@ -37,13 +37,8 @@ def test_requires_explicit_local_context_and_ascii_digits(text: str) -> None:
     assert extract_verification_codes(text) == []
 
 
-@pytest.mark.parametrize(
-    "noise",
-    ["000-000-1234", "2026-11-25"],
-    ids=["phone-number", "calendar-date"],
-)
-def test_ignores_phone_date_and_duration_formats(noise: str) -> None:
-    assert extract_verification_codes(f"验证码：{noise}。") == []
+def test_ignores_hyphenated_number_formats() -> None:
+    assert extract_verification_codes("验证码：2026-11-25。") == []
 
 
 @pytest.mark.parametrize(

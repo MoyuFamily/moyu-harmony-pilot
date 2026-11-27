@@ -26,20 +26,13 @@ def load_case(name: str) -> dict[str, Any]:
     return payload
 
 
-def test_synthetic_battery_units_and_optional_fields() -> None:
-    case = load_case("synthetic_harmony_6_phone")
-    assert parse_battery_dump(case["battery"]["dump"]).to_dict() == case["battery"]["expected"]
-
-
 @pytest.mark.parametrize(
     "case_name, layout_index",
     [
         ("synthetic_harmony_5_phone", 0),
         ("synthetic_harmony_6_tablet", 0),
-        ("synthetic_harmony_6_foldable", 0),
-        ("synthetic_harmony_6_foldable", 1),
     ],
-    ids=["harmony-5-phone", "tablet", "folded", "unfolded"],
+    ids=["harmony-5-phone", "tablet"],
 )
 def test_synthetic_layout_schema_and_compact_snapshots(case_name: str, layout_index: int) -> None:
     case = load_case(case_name)

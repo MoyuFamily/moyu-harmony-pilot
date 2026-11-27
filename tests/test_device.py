@@ -217,7 +217,7 @@ def test_interrupted_lock_acquisition_releases_descriptor_and_thread_lock(
 
 
 def test_telemetry_parsers_calibrated_to_harmony_61() -> None:
-    bat = parse_battery_dump(BATTERY_61_CHARGING)
+    bat = parse_battery_dump(BATTERY_61_CHARGING + "\nhealthState: 1\n")
     assert bat.battery_percent == 72
     assert bat.charging is True
     assert bat.charging_status == 1
@@ -225,6 +225,7 @@ def test_telemetry_parsers_calibrated_to_harmony_61() -> None:
     assert bat.temperature_c == 30.0
     assert bat.voltage_mv == 4210.6
     assert bat.present is True
+    assert bat.health_state == 1
 
     hot = parse_battery_dump(BATTERY_61_OVERHEATED)
     assert hot.temperature_c == 43.5
