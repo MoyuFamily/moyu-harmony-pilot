@@ -1,6 +1,6 @@
 # 应用管理、文件导出、交互与运行诊断
 
-这些能力基于官方 `hdc`、`bm`、`aa`、`uitest`、`mediatool` 工具链。核心依赖保持为 Python 标准库。示例中的 `harmony-01` 是设备别名。
+应用部署、文件查询与导出、录屏会话由内部插件提供，CLI 是面向用户的调用入口，外部业务插件通过 `ctx.call(...)` 复用。底层基于官方 `hdc`、`bm`、`aa`、`uitest`、`mediatool` 工具链，核心依赖为 Python 标准库。示例中的 `harmony-01` 是设备别名。
 
 ## 应用查询与部署
 
@@ -31,11 +31,13 @@ harmony-pilot apps install --device harmony-01 --url https://packages.example.or
 
 支持 HTTP(S) 下载，`--sha256` 可提供原始下载文件的预期摘要。下载有大小上限和超时检查，通过结构与摘要校验后原子替换目标文件。URL 安装缓存位于状态目录的 `packages/` 下，按 URL 路径的 `.app` / `.hsp` 扩展名识别格式，其他路径沿用 `.hap`。下载接口没有格式扩展名时，可先用 `apps download --out ./release.app` 指定保存格式，再从本地安装。Python 提供 `download_package()` 和 `package_metadata()` 通用入口，原有 `download_hap()` 与 `hap_metadata()` 可继续使用。
 
-`app.install`、`app.uninstall` 使用现有 `ActionRunner`、设备锁、过温门控和 SQLite 幂等账本。当前两项动作设为本地执行，CLI 同时提供 `plugins describe` 参数契约。宿主机文件路径和下载地址由本地部署方管理。
+内部插件 `app.install`、`app.uninstall` 使用 `ActionRunner`、设备锁、过温门控和 SQLite 幂等账本。两项动作设为本地执行，CLI 提供 `plugins describe` 参数契约。宿主机文件路径和下载地址由本地部署方管理。
 
-Python SDK 提供 `HarmonyDevice.list_apps()`、`app_info()`、`install_app()`、`uninstall_app()`。直接调用 SDK 安装原语时，调用方负责持有设备锁并管理提交状态。需要持久化幂等保证时使用 `ActionRunner`。`start_app(bundle, ability_name=None)` 会查询入口，多个候选入口无法明确选择时要求显式传入 Ability。省略 `ability_name` 继续使用原有 `EntryAbility` 默认值。
+外部插件从 `0.2.1.dev0` 起可通过 `ctx.call("app.install", params, idempotency_key=...)` 或 `app.uninstall` 组合部署流程，在父动作的 `prepare` 或 `submit` 阶段使用稳定幂等键。应用查询可使用 CLI 的 `apps list/info`，业务界面导航可使用 `ctx.interact()`。底层 `start_app(bundle, ability_name=None)` 会查询入口，多个候选入口无法明确选择时要求显式传入 Ability。省略 `ability_name` 时使用 `EntryAbility` 默认值。
 
 ## 不确定结果与账本维护
+
+父 `prepare` 中的子动作真正到达 reserve 提交阶段时，先递归预留父／祖先请求，再预留子请求并提交。提前预留防止子提交后整请求重放，后续父失败、取消或崩溃，以及子动作 `unknown`，均保留父请求的 `unknown`。先使用子动作原 `action_id`、`idempotency_key` 和参数执行 `ledger reconcile`，再核验父组合动作。最终需要人工结案时，按下述原流程使用 `ledger resolve`。
 
 安装或卸载提交后出现断连、超时、确认失败时，状态保持 `unknown`。恢复连接后可以使用原请求参数执行只读对账。`apps install --json` 返回的 `data.params` 包含可复用参数。
 
@@ -57,7 +59,7 @@ harmony-pilot ledger prune --older-than-days 90 --json
 
 ## 手机文件查询与导出
 
-通过本地 CLI 或 Python SDK 查询图库媒体，并将设备上的单个文件导出到宿主机。图片、视频、音频和文档均按原始字节传输，每次导出一个文件。
+内部插件 `files.query` 查询图库媒体，`files.export` 将设备上的单个文件导出到宿主机。可通过本地 CLI 或外部插件中的 `ctx.call(...)` 使用。图片、视频、音频和文档均按原始字节传输，每次导出一个文件。
 
 ### 按图库名称查询
 
@@ -114,13 +116,13 @@ harmony-pilot files export --device harmony-01 --source 'file://media/Photo/100'
 
 完成导出后的清理异常通过 `cleanup_pending` 返回。设备恢复连接或宿主机恢复写入权限后，可按返回的位置和路径清理这些文件。
 
-### 设备权限与 SDK 调用
+### 设备权限与插件内调用
 
 图库查询和媒体导出需要设备提供官方 `mediatool`，可访问范围由设备当前用户和权限决定。隐藏相册及云端尚未下载媒体的可访问性，以官方工具在该设备上的实际返回为准。
 
-CLI 调用期间持有单设备锁。Python SDK 提供 `HarmonyDevice.query_media()` 与 `HarmonyDevice.export_file()`，调用方通过 `device.acquire_lock()` 持锁后调用。文件保存在执行命令或 SDK 的宿主机上。
+CLI 调用期间持有单设备锁。外部插件声明 `min_pilot_version="0.2.1.dev0"` 后，通过 `ctx.call("files.query", params)` 或 `ctx.call("files.export", params)` 复用内部插件，参数与执行要求以 `plugins describe` 为准。子调用共享设备锁与总预算，通过返回值 `.data` 获取结构化结果，文件保存在执行插件的宿主机上。
 
-外部 Action 插件可调用上述 SDK。MCP 通过 `--allow-action` 显式授权插件动作，Bridge 通过逐设备 `allowed_actions` 授权，插件接入遵循现有参数契约、回执和敏感信息边界。
+两项文件插件均声明 `side_effect=readonly`、`local_only=true`，其中 `readonly` 表示设备只读，导出仍会在宿主机产生文件，适用于本地调用和本地父插件组合。MCP `run_action` 与 Bridge 的远程调用链会逐个检查子动作的本地执行限制。
 
 ## 本地 Agent 交互
 
@@ -135,7 +137,7 @@ harmony-pilot interact scroll --device harmony-01 --local-lab --selector-json '{
 
 还提供 `click`、`swipe`、`back`、`home`。直接交互使用最新布局哈希，滚动查找会在每次滑动前重新观测和检查。输入支持单行、最多 4096 字符，敏感屏转人工处理。
 
-CLI 每次调用创建一份 `--timeout` / `--max-steps` 预算。MCP 本地探索会跨工具调用共享同一个会话预算。Python `wait_for` / `wait_gone` 已将剩余抓取时间和窗口、屏幕过滤参数向下传递。SDK 的超时为 0 时保留原有单次观测语义，采用布局抓取默认超时。临时文件清理另有最多 1 秒的收尾预算。
+CLI 每次调用创建一份 `--timeout` / `--max-steps` 预算。MCP 本地探索会跨工具调用共享同一个会话预算。底层 `wait_for` / `wait_gone` 将剩余抓取时间和窗口、屏幕过滤参数向下传递，其超时为 0 时采用单次观测语义和布局抓取默认超时。临时文件清理另有最多 1 秒的收尾预算。
 
 ## 多设备并发
 
@@ -155,6 +157,8 @@ harmony-pilot report --input ./saved-result.json --out .state/diagnostics/run.ht
 
 ## 产品验收与调试录屏
 
+内部插件 `record.start`、`record.status`、`record.stop` 管理录屏会话，均声明 `side_effect=readonly`、`local_only=true`，其中 `readonly` 表示设备只读，宿主机仍会产生会话与文件。用户通过下面的 CLI 入口使用，本地外部插件也可通过 `ctx.call(...)` 组合调用，并按 `plugins describe` 提供参数。会话启动后可与业务操作并行，结构化会话结果由 `ActionOutcome.data` 交付，设备锁需求由 `lock_device` 描述。
+
 由于 HarmonyOS NEXT 官方命令行不内置 Android 风格的 `screenrecord`，Pilot 基于官方 `snapshot_display` 按实际时间戳连续采帧，并通过宿主机 `ffmpeg` 合成 1:1 实时节奏的标准 H.264 MP4（`yuv420p`、`+faststart`）。采帧不占用 `uitest` 独占设备锁，可与交互操作和 Action 执行并发运行，核心 Python 依赖仍保持零第三方包。
 
 ### 方式一：独立会话录屏（适合手工验收与多命令调试）
@@ -166,12 +170,14 @@ harmony-pilot record start --device harmony-01 --out .state/diagnostics/demo.mp4
 # 查询录屏状态
 harmony-pilot record status --device harmony-01 --json
 
-# 停止录屏并封装 MP4（自动清理临时帧与设备端 /data/local/tmp/ 临时文件）
+# 停止录屏并封装 MP4（完成后清理临时帧与设备端 /data/local/tmp/ 临时文件）
 harmony-pilot record stop --device harmony-01 --json
 
 # 或直接前台定时录一段（支持 Ctrl+C 提前结束并正常封装）
 harmony-pilot record capture --device harmony-01 --duration 10 --out .state/diagnostics/clip.mp4 --json
 ```
+
+`record stop` 中断时会保留会话，先用 `record status` 查看状态，再用 `record stop` 恢复收尾。
 
 ### 方式二：跟随动作执行自动录屏（适合自动化验收与失败留证）
 
@@ -184,7 +190,7 @@ harmony-pilot run --device harmony-01 --action device.health --record-out .state
 ```
 
 - 依赖与自检：需要宿主机已安装 `ffmpeg`（如 macOS 执行 `brew install ffmpeg`），`harmony-pilot doctor` 会报告 `ffmpeg_binary` 检测状态；缺失时录屏命令会在触达设备前快速报错（退出码 `2`）。
-- 安全与隐私约束：录屏仅限本地执行；后台会话元数据与进程参数不落盘或暴露真实设备串号；最终 MP4 文件强制 `0600` 权限，最长录制时长受 `--max-duration`（上限 600 秒）保护，录制结束自动清理临时帧目录。
+- 录屏仅限本地执行，后台会话元数据与进程参数严禁包含真实设备串号。最终 MP4 文件强制 `0600` 权限，最长录制时长受 `--max-duration`（上限 600 秒）保护，正常收尾后自动清理临时帧目录。
 
 ## 验证范围
 

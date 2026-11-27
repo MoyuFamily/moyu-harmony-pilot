@@ -6,9 +6,11 @@ import importlib
 import io
 import json
 import os
+import tomllib
 from pathlib import Path
 from typing import Any
 
+from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.cli import (
     SCHEMA_VERSION,
     ExitCode,
@@ -87,6 +89,10 @@ def test_schema_command_offline_and_synced_with_parser() -> None:
 
     # Every CLI subcommand registered in argparse must be documented in schema
     parser = build_parser()
+    assert parser.prog == "harmony-pilot"
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text())
+    assert metadata["project"]["version"] == __version__ == schema["pilot_version"]
     registered_commands: set[str] = set()
     for action in parser._actions:
         if hasattr(action, "choices") and isinstance(action.choices, dict):

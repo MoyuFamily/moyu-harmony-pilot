@@ -18,7 +18,16 @@ from moyu_harmony_pilot.actions import (
     ActionRunner,
     InteractionSession,
 )
+from moyu_harmony_pilot.actions.files import (
+    FILES_EXPORT_RESULT_SCHEMA,
+    FILES_QUERY_RESULT_SCHEMA,
+)
 from moyu_harmony_pilot.actions.ledger import ActionLedger, digest
+from moyu_harmony_pilot.actions.recording import (
+    RECORDING_START_RESULT_SCHEMA,
+    RECORDING_STATUS_RESULT_SCHEMA,
+    RECORDING_STOP_RESULT_SCHEMA,
+)
 from moyu_harmony_pilot.actions.reports import capture_inspector, write_report
 from moyu_harmony_pilot.actions.sms import SMS_ERROR_HINTS, SMS_RESULT_SCHEMA
 from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES, validate_value
@@ -80,6 +89,7 @@ OPERATION_SCHEMAS: dict[str, Any] = {
         "subcommands": {
             "query": {
                 "description": "Find gallery media URIs by exact filename using mediatool.",
+                "action_id": "files.query",
                 "side_effect": "readonly",
                 "private_content": True,
                 "options": {
@@ -93,22 +103,11 @@ OPERATION_SCHEMAS: dict[str, Any] = {
                     },
                     "--timeout": {**TIMEOUT, "default": 30},
                 },
-                "result_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["alias", "name", "uris", "count", "total", "truncated"],
-                    "properties": {
-                        "alias": {"type": "string"},
-                        "name": {"type": "string"},
-                        "uris": {"type": "array", "items": {"type": "string"}},
-                        "count": {"type": "integer", "minimum": 0},
-                        "total": {"type": "integer", "minimum": 0},
-                        "truncated": {"type": "boolean"},
-                    },
-                },
+                "result_schema": FILES_QUERY_RESULT_SCHEMA,
             },
             "export": {
                 "description": "Export one file through hdc or gallery mediatool staging.",
+                "action_id": "files.export",
                 "side_effect": "local_file",
                 "private_content": True,
                 "options": {
@@ -128,34 +127,7 @@ OPERATION_SCHEMAS: dict[str, Any] = {
                         "seconds for gallery temporary-file cleanup.",
                     },
                 },
-                "result_schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": [
-                        "alias", "source", "path", "size_bytes", "sha256", "transport",
-                        "cleanup_pending",
-                    ],
-                    "properties": {
-                        "alias": {"type": "string"},
-                        "source": {"type": "string"},
-                        "path": {"type": "string"},
-                        "size_bytes": {"type": "integer", "minimum": 0},
-                        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                        "transport": {"type": "string", "enum": ["hdc", "mediatool"]},
-                        "cleanup_pending": {
-                            "type": "array",
-                            "items": {
-                                "type": "object", "additionalProperties": False,
-                                "required": ["location", "path"],
-                                "properties": {
-                                    "location": {"type": "string", "enum": ["device", "host"]},
-                                    "path": {"type": "string"},
-                                },
-                            },
-                            "description": "Managed temporary paths requiring cleanup.",
-                        },
-                    },
-                },
+                "result_schema": FILES_EXPORT_RESULT_SCHEMA,
             },
         },
     },
@@ -166,6 +138,7 @@ OPERATION_SCHEMAS: dict[str, Any] = {
         "subcommands": {
             "read": {
                 "description": "Read private SMS content and verification codes on screen.",
+                "action_id": "sms.read",
                 "side_effect": "readonly",
                 "private_content": True,
                 "scope": "current-screen",
@@ -186,6 +159,7 @@ OPERATION_SCHEMAS: dict[str, Any] = {
                 },
             },
             "open": {
+                "action_id": "sms.open",
                 "side_effect": "mutating",
                 "options": {**DEVICE, "--idempotency-key": KEY, "--timeout": TIMEOUT},
             },
@@ -395,6 +369,8 @@ OPERATION_SCHEMAS: dict[str, Any] = {
         "subcommands": {
             "start": {
                 "description": "Start a detached background screen recording session.",
+                "action_id": "record.start",
+                "result_schema": RECORDING_START_RESULT_SCHEMA,
                 "side_effect": "readonly",
                 "options": {
                     **DEVICE,
@@ -411,6 +387,8 @@ OPERATION_SCHEMAS: dict[str, Any] = {
             },
             "stop": {
                 "description": "Stop an active recording session and finalize its MP4 file.",
+                "action_id": "record.stop",
+                "result_schema": RECORDING_STOP_RESULT_SCHEMA,
                 "side_effect": "readonly",
                 "options": {
                     **DEVICE,
@@ -419,6 +397,8 @@ OPERATION_SCHEMAS: dict[str, Any] = {
             },
             "status": {
                 "description": "Inspect whether a recording session is active for the device.",
+                "action_id": "record.status",
+                "result_schema": RECORDING_STATUS_RESULT_SCHEMA,
                 "side_effect": "readonly",
                 "options": {**DEVICE},
             },

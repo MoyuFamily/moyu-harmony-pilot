@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from moyu_harmony_pilot.cli import scaffold
+from tests.test_scaffold import TEMPLATE_FILES
+
 
 def _run_offline(
     command: list[str], *, cwd: Path, timeout: int = 30,
@@ -111,7 +114,18 @@ def test_sdist_and_wheel_include_required_community_deliverables(
 ) -> None:
     artifacts, private_paths, private_marker = distribution_artifacts
     root = Path(__file__).resolve().parents[1]
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    project = config["project"]
+    prefix = "share/moyu-harmony-pilot/plugin-template"
+    mapped: dict[str, str] = {}
+    for destination, sources in config["tool"]["setuptools"]["data-files"].items():
+        if destination == prefix or destination.startswith(prefix + "/"):
+            for source in sources:
+                relative = (Path(destination) / Path(source).name).relative_to(prefix).as_posix()
+                assert relative not in mapped
+                mapped[relative] = source
+    assert mapped == {name: f"examples/plugin-template/{name}" for name in TEMPLATE_FILES}
+    assert set(scaffold._TEMPLATE_FILES) == TEMPLATE_FILES
     assert project["dependencies"] == []
     with tarfile.open(next(artifacts.glob("*.tar.gz"))) as archive:
         names = {"/".join(name.split("/")[1:]) for name in archive.getnames()}
@@ -205,16 +219,19 @@ def test_sdist_and_wheel_include_required_community_deliverables(
             name for name in names
             if name.endswith("/plugin-template/.github/workflows/contract.yml")
         )
-        assert (
-            "vars.PILOT_REF || 'v" + project["version"] + "'"
-            in archive.read(workflow_name).decode()
-        )
         requirements_name = next(
             name for name in names if name.endswith("/plugin-template/requirements-test.txt")
         )
+        # Existing templates can target a stable release while Pilot develops compatible additions.
+        requirement = next(
+            line for line in archive.read(requirements_name).decode().splitlines()
+            if line.startswith(project["name"] + "==")
+        )
+        tested_version = requirement.split("==", 1)[1]
+        assert tested_version
         assert (
-            project["name"] + "==" + project["version"]
-            in archive.read(requirements_name).decode().splitlines()
+            "vars.PILOT_REF || 'v" + tested_version + "'"
+            in archive.read(workflow_name).decode()
         )
         entries_name = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
         assert "harmony-pilot-mcp" in archive.read(entries_name).decode()

@@ -1,6 +1,6 @@
 # Action 插件开发与本地执行指南
 
-本文说明如何在本地查看与运行内置动作、接入外部插件、编写符合规范的 `ActionPlugin` / `IdempotentAction`，以及使用本地视觉标注（SoM）、OCR 和受控交互会话。
+Pilot 的插件分为随主程序分发的内部插件与独立安装的外部插件。两者共享 `ActionPlugin` / `IdempotentAction` 契约，通过 CLI、MCP、Pull Bridge 或插件内的 `ctx.call(...)` 调用。本文的组合调用与结构化直接结果约定面向 `0.2.1`，安装版本的具体参数与入口限制可通过 `plugins describe` 查看。
 
 ## 从离线工程开始
 
@@ -15,7 +15,7 @@ harmony-pilot plugins describe team.demo_toggle --json
 harmony-pilot plugins validate team.demo_toggle --params-json '{"enabled":true}' --idempotency-key demo-check --json
 ```
 
-目标使用新目录，创建成功后文件清单会随 JSON 返回。包名默认来自目录名，可用 `--package` 单独指定，例如目标路径含空格时使用 `--package team-pilot`。Python 模块名转为小写，并将连续的点、下划线和连字符合并为下划线。工程创建使用 SDK 随包提供的模板文件，独立插件的安装是下一步操作。
+目标使用新目录，创建成功后文件清单会随 JSON 返回。包名默认来自目录名，可用 `--package` 单独指定，例如目标路径含空格时使用 `--package team-pilot`。Python 模块名转为小写，并将连续的点、下划线和连字符合并为下划线。工程创建使用 Pilot 随包提供的模板文件，独立插件的安装是下一步操作。
 
 生成工程含只读电量检查和三段式开关示例。先运行现成的离线契约，再逐步替换业务逻辑，每次只改对应的实现和测试场景。
 
@@ -31,7 +31,7 @@ harmony-pilot plugins validate team.demo_toggle --params-json '{"enabled":true}'
 
 ---
 
-## 1. 查看与运行内置动作
+## 1. 查看与运行内部插件
 
 ```bash
 harmony-pilot plugins list --json
@@ -42,13 +42,31 @@ harmony-pilot run --device harmony-01 --action ui.inspect --params-json '{"max_e
 harmony-pilot run --device harmony-01 --action device.health --dry-run --json
 ```
 
-仓库默认内置 3 个通用只读动作：
+内部插件提供以下通用操作。插件来源及调用约束以 `plugins list/describe` 为准。
 
 | 动作 ID | 作用说明 | 远程可见性 |
 | :--- | :--- | :--- |
 | `device.ping` | 检测官方 `uitest` 服务是否正常响应 | 需白名单显式放行 |
 | `device.health` | 读取电量、充电态、电池温度、亮灭屏与过温标志 | 需白名单显式放行 |
 | `ui.inspect` | 抓取紧凑 UI 快照保存到本地诊断目录，并返回 `layout_hash` 与元素数 | 仅限本地（`local_only`） |
+| `app.install`、`app.uninstall` | 安装与卸载应用，使用幂等账本 | 仅限本地（`local_only`） |
+| `sms.open` | 打开系统短信列表，使用幂等账本 | 需白名单显式放行 |
+| `sms.read` | 读取可见短信，正文放在私有直接结果中 | MCP 需显式短信授权与动作白名单，Bridge 禁止调用 |
+| `files.query`、`files.export` | 查询媒体 URI、导出单个文件 | 仅限本地（`local_only`） |
+| `record.start`、`record.status`、`record.stop` | 管理可与业务操作并行的录屏会话 | 仅限本地（`local_only`），MCP 专用录屏入口需显式开启 |
+
+文件与录屏插件的 `side_effect=readonly` 表示设备只读，宿主机仍会产生文件或录屏会话，调用时只需提供动作参数。
+
+`plugins describe` 同时提供以下元数据，外部插件采用相同的描述契约。
+
+| 字段 | 含义 |
+| --- | --- |
+| `source` | `internal` 为随 Pilot 分发的内部插件，`external` 为通过 entry point 或目录发现的外部插件 |
+| `result_schema` | `ActionOutcome.data` 的结构化直接结果契约 |
+| `private_content` | 直接结果是否包含需要私有入口授权的内容 |
+| `lock_device` | 执行是否需要设备独占锁，子调用复用当前调用链持有的锁 |
+
+CLI 子命令和 MCP 工具是插件的调用入口。复用同一插件时，各入口仍按自己的白名单、本地执行限制和私有内容授权进行门控。
 
 ### 使用注意
 
@@ -101,16 +119,17 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 
 - 多个目录用宿主路径分隔符拼接（macOS / Linux 下为 `:`）；
 - 若存在重复的动作 ID 或元数据不一致，发现阶段会立即以 `configuration_error` 中止；修改插件代码后需重启进程重新加载；
-- Bridge 服务可在私有 JSON 配置中设置 `plugin_paths`（相对路径基于配置文件目录解析），Python SDK 也可调用 `ActionRegistry.discover(plugin_paths=...)`；两者都会覆盖当次的环境变量设置，同时仍保留已安装包 entry point 的发现。
+- Bridge 服务可在私有 JSON 配置中设置 `plugin_paths`（相对路径基于配置文件目录解析），程序内可调用 `ActionRegistry.discover(plugin_paths=...)`。两者都会覆盖当次的环境变量设置，同时仍保留已安装包 entry point 的发现。
 
 ---
 
 ## 3. 插件开发契约
 
-从 `moyu_harmony_pilot.actions` 导入 `ActionPlugin`、`ActionSpec`、`ActionContext`、`ActionOutcome`：
+从 `moyu_harmony_pilot.actions` 导入插件契约类型。
+
 - **只读插件**：继承 `ActionPlugin`，实现 `execute(ctx, params) -> ActionOutcome`；
 - **有副作用插件**：继承 `IdempotentAction`，实现三段式 `inspect` / `submit` / `confirm`；
-- 在类属性 `spec` 中显式声明参数 Schema、返回指标 Schema、版本号、描述、超时与副作用级别。
+- 在类属性 `spec` 中显式声明参数 Schema、返回指标 Schema、版本号、描述、超时与副作用级别。提供结构化直接结果时声明 `result_schema`，并按实际内容与执行方式设置 `private_content`、`lock_device`。
 
 ### 3.1 版本与兼容性声明
 
@@ -121,21 +140,40 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 3. **包依赖范围**：打包分发的插件在 `pyproject.toml` 中声明支持的 Pilot 版本区间（`project.dependencies`）和 Python 版本区间（`project.requires-python`），并针对支持的每个版本跑通离线契约测试；目录式插件请在 `actions.json` 同级文档中注明环境要求。
 4. 在 `ActionSpec.min_pilot_version` 中声明最低宿主版本，注册与发现时会先校验。`inspection_metrics`、`reconciling`、`inspection_metrics_schema`、`ctx.interact()` 和 `ctx.dismiss_popup()` 从 `0.2.0.dev0` 起提供。新插件可沿用模板的 `min_pilot_version="0.2.0rc1"` 与包依赖下限，阶段指标 Schema 与上下文交互接口会拒绝缺失或过低的声明。
 
-当前候选版本为 `0.2.0rc1`。最低版本接受 `X.Y.Z` 及规范的 `aN`、`bN`、`rcN`、`.postN`、`.devN` 后缀，按开发版、预发布版、正式版顺序比较。已有开发插件的 `0.2.0.dev0` 声明仍可注册，升级到包含精确点击断言的模板时，同步更新测试基线。仅使用原有 Action API v1 的插件可以继续省略最低版本字段。
+`ctx.call(...)` 示例要求 Pilot `>=0.2.1`。采用该接口的插件声明 `min_pilot_version="0.2.1"`，并为自身包依赖和调用用例设置相应下限。独立插件模板的测试基线为 `0.2.1`，最低兼容版本仍为 `0.2.0rc1`，已有 Action API v1 插件继续兼容。开发期间的 `0.2.1.dev0` 最低版本声明仍可注册，机器自描述保留这一接口起始版本。
+
+最低版本接受 `X.Y.Z` 及规范的 `aN`、`bN`、`rcN`、`.postN`、`.devN` 后缀，按开发版、预发布版、正式版顺序比较。已有开发插件的 `0.2.0.dev0` 声明仍可注册。仅使用原有 Action API v1 的插件可以继续省略最低版本字段。
 
 ### 3.2 参数、回执边界与超时控制
 
+`ActionOutcome.data` 承载符合 `result_schema` 的私有或结构化直接结果。`to_dict()` 默认只序列化安全回执，本地 CLI 或显式授权的私有 MCP 入口使用 `to_dict(include_data=True)` 交付直接结果。安全回执与账本只记录状态、脱敏摘要和指标，短信正文等私有内容仅用于直接调用结果。
+
 - **JSON Schema 子集**：支持显式类型、闭合对象属性（对象 Schema 必须声明 `additionalProperties: false`）、`required`、数组元素 Schema、`enum`、数值范围及字符串/数组长度限制；整数参数须为 JSON 整型字面量，布尔值与整数严格区分。可通过 `harmony-pilot schema --json` 查看全部支持关键字。
 - **体积与隐私硬上限**：
-  - 参数、插件元数据、单条回执的规范化 JSON 均不得超过 **16 KiB**，嵌套深度不超过 **8 层**；
+  - 参数、插件元数据、安全回执及账本中的单条 JSON 载荷上限为 **16 KiB**，嵌套深度不超过 **8 层**。直接结果 `data` 的规范化 JSON 上限为 **1 MiB**，同时受插件的 `result_schema` 与内容上限约束。
   - 回执 `metrics` 仅允许已声明的扁平标量字段：最多 **32 个键**，键名 ≤ **64 字符**，字符串值 ≤ **128 字符**，数字须为有限值；
   - `summary` ≤ **256 字符**，`error_code` ≤ **64 字符**（小写蛇形命名）；
   - 插件作者须确保摘要、指标和日志中绝不包含凭据、硬件串号、原始 UI 文本或个人隐私信息。
 - **检查点与步数/时间预算**：
   - 每次界面交互前和循环体内应调用 `ctx.checkpoint()`，并将 `ctx.remaining_timeout` 透传给驱动调用；
   - `--max-steps` 统计运行器阶段边界与插件显式检查点，默认上限 `100`；
-  - 在 macOS / Linux 上，运行器通过 POSIX `SIGALRM` 实施阶段硬超时，因此需在**进程主线程**运行 SDK Runner 且避免占用系统实时定时器；`--timeout` 可用于缩短插件默认超时；插件代码应正确传播取消信号并使用有界驱动调用，取消后仍会执行设备清理与账本落盘。
-- **安全门控**：所有动作都会先获取物理设备独占锁；非诊断类动作须通过电池过温门控；有副作用动作在提交前还会额外复检敏感屏信号与电池温度。建议把 `submit` 阶段尽量做小，导航途中主动关注敏感界面。
+  - 在 macOS / Linux 上，运行器通过 POSIX `SIGALRM` 实施阶段硬超时，因此需在**进程主线程**运行 `ActionRunner` 且避免占用系统实时定时器。`--timeout` 可用于缩短插件默认超时。插件代码应正确传播取消信号并使用有界驱动调用，取消后仍会执行设备清理与账本落盘。
+- 按 `lock_device` 声明获取或复用物理设备独占锁。非诊断类动作须通过电池过温门控，有副作用动作在提交前还会额外复检敏感屏信号与电池温度。建议把 `submit` 阶段尽量做小，导航途中主动关注敏感界面。
+
+### 3.3 在插件内调用其他插件
+
+在 Runner 提供的上下文中使用 `ctx.call(action_id, params=None, *, idempotency_key=None, timeout=None)`，可调用已发现的内部插件或外部插件，返回 `ActionOutcome`。通过 `.data` 读取结构化直接结果，子动作失败会自动向上传递状态，包括 `human_required` 与 `unknown`。
+
+- 父子动作使用同一设备，并共享设备锁与总时间、步数预算。`timeout` 可缩短子调用时限，实际执行受父动作剩余预算约束。
+- `mutating` 子动作仅可在父动作的 `prepare` 或 `submit` 阶段调用，调用时必须提供由业务请求及具体步骤派生的稳定幂等键。
+- 父 `prepare` 内首次有副作用子动作到达 reserve 提交阶段时，Runner 先递归将父／祖先请求预留为 `submitting`，再预留子请求，最后提交子动作，各自写入动作账本。提前预留覆盖子动作已提交而父动作尚未完成的故障窗口。
+- 子动作在 `inspect` 阶段拒绝或命中已有成功记录时，跳过新增父预留。父 `prepare` 正常完成后更新持久化基线。
+- 一旦已有子提交，后续父失败、取消或崩溃保留 `unknown`，阻止整请求自动重放。子动作 `unknown` 同样向父传播，插件捕获异常后仍保持该状态。尚无子提交的普通准备失败沿用原键可重试。
+- 远程调用逐个校验父动作和子动作的白名单、`local_only` 与私有内容授权，具体边界见第 5 节。
+
+恢复时先按子动作原 `action_id`、`idempotency_key` 和参数执行 `ledger reconcile` 只读对账，再按父动作原身份核验组合结果。需要人工结案时，沿用核验后执行 `ledger resolve` 的流程。[账本维护](app-management.md#不确定结果与账本维护)
+
+短信导航与读取的外部插件准备阶段示例见[系统短信调用](sms.md#在外部插件中读取短信)。
 
 ---
 
@@ -144,7 +182,7 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 有副作用的业务动作必须继承 `IdempotentAction`，拆分为以下明确阶段：
 
 1. **`inspect(ctx, params)`（只读检查）**：检查当前界面状态，返回 `Inspection`（状态为 `ready`、`already_done`、`human_required` 或 `failed`），可携带仅供后续阶段使用的私有上下文。
-2. **`prepare(ctx, inspection, params)`（可选，提交前幂等准备）**：仅当 `inspect` 返回 `ready` 且插件覆写了该方法时，在写入 `submitting` 账本预留**之前**执行。适合放拉起应用、关闭通用弹窗、导航至目标页面并再次确认是否已完成等可重复前置步骤；返回 `ready` 时自动继承并合并 `inspect` 阶段的基线指标。此阶段返回 `human_required` / `failed` 或抛错不会锁定幂等键，修复环境后可直接用原键重试；返回 `already_done` 则跳过 `submit` 并记录已完成。依赖该阶段的插件建议声明 `min_pilot_version="0.2.0rc1"`。
+2. **`prepare(ctx, inspection, params)`（可选，提交前幂等准备）** 在 `inspect` 返回 `ready` 且插件覆写该方法时执行，适合拉起应用、关闭通用弹窗和导航等准备步骤。返回 `ready` 时继承并合并检查基线，已有提前预留时更新持久化基线。子动作真正到达 reserve 阶段会先递归预留父／祖先请求。尚无子提交的普通准备失败可在修复环境后重试，已有子提交后的失败按 `unknown` 对账。返回 `already_done` 时记录已完成。依赖该阶段的插件建议声明 `min_pilot_version="0.2.0rc1"`，使用 `ctx.call` 时提高到 `0.2.1`。
 3. **`submit(ctx, inspection, params)`（至多一次提交）**：仅在运行器先把 `submitting` 预留写入 SQLite 账本后才会被调用，负责执行真正产生副作用的操作。
 4. **`confirm(ctx, params)`（独立复核）**：提交完成后独立核验界面结果，返回有界 `ActionOutcome`。
 
@@ -158,14 +196,14 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 | 最终 `succeeded` / `already_done` | 完整校验 `metrics_schema` 的必填项 |
 | 其他最终结果 | 保留字段、类型与大小校验，允许缺少成功指标 |
 
-`Inspection.summary` 与 `Inspection.error_code` 可携带脱敏的接管原因。检查/准备阶段指标随提交前预留落盘，`confirm` 通过 `ctx.inspection_metrics` 读取。只读对账会设置 `ctx.reconciling=True`，旧账本缺少的基线字段按空字典处理，插件应返回 `unknown` 并请求人工核验。
+`Inspection.summary` 与 `Inspection.error_code` 可携带脱敏的接管原因。检查基线随预留落盘，`prepare` 正常完成后更新持久化基线，`confirm` 通过 `ctx.inspection_metrics` 读取。只读对账会设置 `ctx.reconciling=True`，旧账本缺少的基线字段按空字典处理，插件应返回 `unknown` 并请求人工核验。
 
 ### 插件内交互
 
 在 Runner 调用的阶段内使用 `session = ctx.interact()`。该会话复用设备锁、阶段计时器、步数预算和提交前取消信号，每次观察、等待或交互都会计入总预算。Runner 返回后，会话随上下文失效。
 
 - `inspect`、只读 `execute` 和 `confirm` 可调用 `observe`、无弹窗处理的 `wait_for`。
-- `prepare` 可在账本预留前调用交互、应用启动、滚动查找与弹窗处理，用于把界面带到可提交状态；若遇敏感屏、过温或取消信号会安全中止且不落防重记录。
+- `prepare` 可调用交互、应用启动、滚动查找与弹窗处理，用于把界面带到可提交状态。子提交会提前触发父／祖先预留，此后遇敏感屏、过温或取消信号中止时按 `unknown` 处理。
 - `submit` 可在账本预留完成后调用点击、输入、滑动、导航及弹窗处理。每次写操作仍校验新鲜 `layout_hash`、敏感屏和温度。
 - `ctx.dismiss_popup(watcher)` 复用同一交互接口。插件在提交后遇到不确定结果时应立即结束，让 Runner 保留 `unknown`，后续通过 `ledger reconcile` 只读复核。
 
@@ -174,7 +212,7 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 ### 账本与状态流转规则
 
 - **幂等身份**：每次有副作用执行都必须显式提供 `--idempotency-key`（1–256 字符）。SQLite 账本以「哈希后的物理设备串号 + 动作 ID + 哈希后的幂等键」作为唯一主键，并用请求指纹绑定参数与插件 `version`；同一幂等键若更换参数或版本号会返回 `configuration_error`。
-- **取消边界**：`inspect` 与 `prepare` 阶段（包括写入预留前的最后一刻）都会响应取消信号；一旦 `submitting` 预留落盘，运行器会优先在原时间和步数预算内走完 `submit` 与 `confirm`，关机或租约取消在其后生效。
+- `inspect` 与 `prepare` 响应取消信号。当前提交动作的 `submitting` 预留落盘后，运行器优先在原预算内完成其 `submit` 与 `confirm`。父准备阶段因子提交而提前预留后，后续取消使父请求保留 `unknown`。
 - **防重放与崩溃恢复**：
   - 已确认完成的记录，再次调用会直接短路返回 `already_done`，不会重复唤醒手机或调用插件；
   - 提交阶段发生报错、超时、中断、无法确认或落盘失败，均会落为 `unknown`；进程重启后，持锁检查到遗留的 `submitting` 记录也会自动恢复为 `unknown`；
@@ -185,9 +223,13 @@ harmony-pilot run --device harmony-01 --action example.ui_summary --json
 
 ## 5. 远程执行边界
 
-CLI 面向本机执行；Pull Bridge 与 MCP 则统一经由 `ActionRegistry` / `ActionRunner` 的 `remote=True` 门控与显式 `allowed_actions` 白名单（默认为空）：
-- 远程发现阶段会先按白名单过滤 entry point 名称与目录清单 ID，未放行的插件模块甚至不会被导入；
-- 远程调用阶段会再次核验白名单，并拒绝所有 `local_only` 动作（包括 `ui.inspect`）。
+CLI 面向本机执行，Pull Bridge 与 MCP 的通用动作入口经由 `ActionRegistry` / `ActionRunner` 的 `remote=True` 门控与显式动作白名单（默认为空）。
+
+- 远程发现阶段先按白名单过滤 entry point 名称与目录清单 ID，已放行的外部插件才会被导入。
+- 远程调用阶段对父动作及每次 `ctx.call` 分别核验授权。`local_only` 动作（包括 `ui.inspect`、`files.*`、`record.*`）限本地调用，远程白名单也受该限制约束。
+- MCP 中的短信子调用同时要求 `--enable-sms`、`--allow-action sms.read` 和父动作白名单，流程包含导航时还需 `--allow-action sms.open`。
+- Pull Bridge 禁止执行含私有正文的插件（如 `sms.read`），同样检查子调用。私有正文只通过本地直接结果或显式授权的私有 MCP 入口交付。
+- MCP 的专用本地录屏工具由 `--enable-recording` 开启，其目录与结果边界见 [MCP 使用指南](mcp.md#本地录屏验收与调试)。
 
 ---
 

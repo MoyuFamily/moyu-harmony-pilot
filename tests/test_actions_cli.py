@@ -30,9 +30,6 @@ def cli_setup(tmp_path, monkeypatch):
     "argv",
     [
         pytest.param(["plugins", "list", "--json"], id="list-default-deny"),
-        pytest.param(
-            ["plugins", "--json", "describe", "device.health"], id="describe-contract"
-        ),
     ],
 )
 def test_discovery_works_offline_at_each_flag_position(argv, monkeypatch):
@@ -42,16 +39,16 @@ def test_discovery_works_offline_at_each_flag_position(argv, monkeypatch):
     assert err == ""
     payload = _parse_single_json_envelope(out)
     assert payload["command"] == "plugins"
-    if "describe" in argv:
-        assert payload["data"]["action_id"] == "device.health"
-        assert payload["data"]["api_version"] == 1
-    else:
-        assert {item["action_id"] for item in payload["data"]["plugins"]} == {
-            "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall",
-            "sms.open",
-        }
-        assert all(item["api_version"] == 1 for item in payload["data"]["plugins"])
-        assert not any(item["remote_allowed"] for item in payload["data"]["plugins"])
+    assert {item["action_id"] for item in payload["data"]["plugins"]} == {
+        "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall",
+        "sms.open", "sms.read", "files.query", "files.export",
+        "record.start", "record.status", "record.stop",
+    }
+    assert all(item["api_version"] == 1 for item in payload["data"]["plugins"])
+    assert all(item["source"] == "internal" for item in payload["data"]["plugins"])
+    sms = next(item for item in payload["data"]["plugins"] if item["action_id"] == "sms.read")
+    assert sms["private_content"] and "messages" in sms["result_schema"]["properties"]
+    assert not any(item["remote_allowed"] for item in payload["data"]["plugins"])
 
 
 def test_plugin_validate_is_offline_and_does_not_submit(cli_setup, monkeypatch, tmp_path):

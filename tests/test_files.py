@@ -136,11 +136,11 @@ def _assert_staging_cleaned(transport: FileTransport, destination: Path) -> None
 
 def _assert_export_result(
     envelope: dict[str, Any], *, source: str, destination: Path, contents: bytes,
-    transport_name: str,
+    transport_name: str, command: str = "files",
 ) -> None:
-    assert envelope["ok"] is True and envelope["command"] == "files"
+    assert envelope["ok"] is True and envelope["command"] == command
     assert envelope["error"] is None
-    data = envelope["data"]
+    data = envelope["data"]["data"] if command == "run" else envelope["data"]
     assert data == {
         "alias": "phone",
         "source": source,
@@ -173,10 +173,11 @@ def test_files_export_png_without_hardlinks_preserves_bytes_and_schema(
         raise OSError(errno.EOPNOTSUPP, "Synthetic volume without hard links")
 
     monkeypatch.setattr("moyu_harmony_pilot.device.files.os.link", unsupported_link)
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **kwargs: [])
 
     code, out, err = _run_cli(
-        [*flags, "export", "--device", "phone", "--source", source,
-         "--out", str(destination)],
+        [*flags[:-1], "run", "--device", "phone", "--action", "files.export",
+         "--params-json", json.dumps({"source": source, "out": str(destination)})],
         transport=transport, env={},
     )
 
@@ -184,10 +185,14 @@ def test_files_export_png_without_hardlinks_preserves_bytes_and_schema(
     assert err == "" and state.serial not in out + err
     _assert_export_result(
         _parse_single_json_envelope(out), source=source, destination=destination,
-        contents=contents, transport_name="hdc",
+        contents=contents, transport_name="hdc", command="run",
     )
     _assert_staging_cleaned(transport, destination)
-    assert transport.shell_commands == [["stat", "-c", "%f %s", source]]
+    assert transport.shell_commands == [
+        ["hidumper", "-s", "BatteryService", "-a", "-i"],
+        ["hidumper", "-s", "PowerManagerService", "-a", "-s"],
+        ["stat", "-c", "%f %s", source],
+    ]
     assert state.remote_files == {source: contents}
     receives = [args for _, args, _ in transport.calls if args[:2] == ("file", "recv")]
     assert receives == [("file", "recv", source, str(transport.received_paths[0]))]

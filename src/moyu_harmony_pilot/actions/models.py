@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from moyu_harmony_pilot.actions.validation import IDENTIFIER, json_copy, validate_value
+from moyu_harmony_pilot.actions.validation import (
+    IDENTIFIER,
+    MAX_JSON_BYTES,
+    MAX_RESULT_BYTES,
+    json_copy,
+    validate_value,
+)
 from moyu_harmony_pilot.device import DeviceConfigurationError, HarmonyDevice
 
 if TYPE_CHECKING:
@@ -32,6 +40,7 @@ class ActionStatus(StrEnum):
 
 ACTION_API_VERSION = 1
 CONTEXT_API_MIN_VERSION = "0.2.0.dev0"
+PLUGIN_CALL_MIN_VERSION = "0.2.1.dev0"
 
 
 def empty_schema() -> dict[str, Any]:
@@ -58,6 +67,9 @@ class ActionSpec:
     api_version: int = 1
     inspection_metrics_schema: dict[str, Any] | None = None
     min_pilot_version: str | None = None
+    result_schema: dict[str, Any] | None = None
+    private_content: bool = False
+    lock_device: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "examples", tuple(self.examples))
@@ -77,6 +89,9 @@ class ActionSpec:
             "examples": list(self.examples),
             "api_version": self.api_version,
             "min_pilot_version": self.min_pilot_version,
+            "result_schema": self.result_schema,
+            "private_content": self.private_content,
+            "lock_device": self.lock_device,
         }
         copied: dict[str, Any] = json_copy(payload)
         return copied
@@ -89,8 +104,9 @@ class ActionOutcome:
     metrics: dict[str, int | float | str | bool | None] = field(default_factory=dict)
     error_code: str | None = None
     has_local_diagnostics: bool = False
+    data: dict[str, Any] | None = field(default=None, repr=False)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_data: bool = False) -> dict[str, Any]:
         try:
             status = ActionStatus(self.status)
         except (ValueError, TypeError) as exc:
@@ -118,15 +134,19 @@ class ActionOutcome:
                 and len(value) > 128
             ):
                 raise DeviceConfigurationError("Invalid action metric.")
-        return json_copy(
-            {
-                "status": status.value,
-                "summary": self.summary,
-                "metrics": self.metrics,
-                "error_code": self.error_code,
-                "has_local_diagnostics": self.has_local_diagnostics,
-            }
+        payload: dict[str, Any] = {
+            "status": status.value,
+            "summary": self.summary,
+            "metrics": self.metrics,
+            "error_code": self.error_code,
+            "has_local_diagnostics": self.has_local_diagnostics,
+        }
+        if include_data and self.data is not None:
+            payload["data"] = self.data
+        copied: dict[str, Any] = json_copy(
+            payload, max_bytes=MAX_RESULT_BYTES if include_data else MAX_JSON_BYTES,
         )
+        return copied
 
     def validate(self, spec: ActionSpec, *, stage: str = "final") -> ActionOutcome:
         if stage not in {"inspect", "final"}:
@@ -154,7 +174,31 @@ class ActionOutcome:
         else:
             schema = _relax_required_schema(spec.metrics_schema)
         validate_value(payload["metrics"], schema)
-        return ActionOutcome(**payload)
+        data = (
+            json_copy(self.data, max_bytes=MAX_RESULT_BYTES) if self.data is not None else None
+        )
+        if data is not None:
+            if stage != "final" or spec.result_schema is None:
+                raise DeviceConfigurationError(
+                    "Plugin data requires a declared final result schema."
+                )
+            if status not in {ActionStatus.SUCCEEDED.value, ActionStatus.ALREADY_DONE.value}:
+                raise DeviceConfigurationError("Private results require successful execution.")
+            validate_value(data, spec.result_schema)
+        elif (
+            stage == "final" and spec.result_schema is not None
+            and status == ActionStatus.SUCCEEDED.value
+        ):
+            raise DeviceConfigurationError("Plugin did not return its declared result.")
+        return ActionOutcome(**payload, data=data)
+
+
+class ActionCallError(Exception):
+    """Propagate a child action's safe receipt through its calling action."""
+
+    def __init__(self, outcome: ActionOutcome) -> None:
+        self.outcome = ActionOutcome(**outcome.to_dict())
+        super().__init__("Called plugin did not complete successfully.")
 
 
 @dataclass(frozen=True)
@@ -191,9 +235,25 @@ class ActionContext:
     _interaction: InteractionSession | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    state_dir: Path = field(default_factory=lambda: Path(".state"), kw_only=True)
+    _parent: ActionContext | None = field(default=None, repr=False, kw_only=True)
+    _action_path: tuple[str, ...] = field(default=(), repr=False, kw_only=True)
+    _holds_device_lock: bool = field(default=False, repr=False, kw_only=True)
+    _allowed_actions: frozenset[str] | None = field(default=None, repr=False, kw_only=True)
+    _submitted: bool = field(default=False, repr=False, kw_only=True)
+    _child_unknown: bool = field(default=False, repr=False, kw_only=True)
+    _reserve_submission: Callable[[], None] | None = field(default=None, repr=False, kw_only=True)
+    _call_plugin: Callable[
+        [str, dict[str, Any], str | None, float | None], ActionOutcome
+    ] | None = field(default=None, repr=False, kw_only=True)
 
     @property
     def remaining_timeout(self) -> float:
+        context: ActionContext | None = self
+        while context is not None:
+            if context.steps > context.max_steps:
+                raise ActionBudgetExceeded
+            context = context._parent
         if self.cancelled is not None and self.cancelled():
             raise ActionCancelled
         remaining = self.deadline - time.monotonic()
@@ -203,10 +263,41 @@ class ActionContext:
 
     def checkpoint(self) -> None:
         """Charge one plugin interaction step and check the wall-clock deadline."""
-        self.steps += 1
-        if self.steps > self.max_steps:
-            raise ActionBudgetExceeded
+        context: ActionContext | None = self
+        while context is not None:
+            context.steps += 1
+            context = context._parent
         _ = self.remaining_timeout
+        if self._child_unknown:
+            raise ActionCallError(ActionOutcome(
+                status="unknown", error_code="submission_uncertain",
+                summary="A called plugin requires reconciliation.",
+            ))
+
+    def call(
+        self, action_id: str, params: dict[str, Any] | None = None, *,
+        idempotency_key: str | None = None, timeout: float | None = None,
+    ) -> ActionOutcome:
+        """Call another plugin within the current lock, budget, and authorization."""
+        from moyu_harmony_pilot.actions.versioning import is_version_compatible
+
+        if threading.current_thread() is not threading.main_thread():
+            raise DeviceConfigurationError("Plugin calls require the runner main thread.")
+        if self.stage is None or self._call_plugin is None:
+            raise DeviceConfigurationError("Plugin context is no longer executing.")
+        if self._plugin_min_version is None or not is_version_compatible(
+            self._plugin_min_version, PLUGIN_CALL_MIN_VERSION
+        ):
+            raise DeviceConfigurationError(
+                f"Plugin calls require min_pilot_version >= {PLUGIN_CALL_MIN_VERSION}."
+            )
+        self.checkpoint()
+        outcome = self._call_plugin(
+            action_id, {} if params is None else params, idempotency_key, timeout
+        )
+        if outcome.status not in {"succeeded", "already_done"}:
+            raise ActionCallError(outcome)
+        return outcome
 
     def interact(self) -> InteractionSession:
         """Return a context-bound UI session reusing this action's lock, budget, and stage."""

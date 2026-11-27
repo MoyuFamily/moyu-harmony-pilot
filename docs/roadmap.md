@@ -22,7 +22,7 @@
 | **P0** | 多版本真机兼容、类型检查与发布自动化 | 冻结协议 v1.0、补齐 `mypy`/`py.typed`、跨版本兼容 Fixture 与 Tag 自动发版 | `device`, `ui`, CI/发版 |
 | **P1** | 单宿主机多设备并发与 Bridge 运维增强 | 加固已有并发能力，完善心跳元信息、TLS/密钥轮换与残留清扫 | `bridge`, `actions`, `hdc` |
 | **P1** | 底层驱动健壮性补全 | 验证已有等待与输入能力，完善 Want 控制、无线 `hdc` 辅助与传输层评估 | `hdc`, `ui`, `device` |
-| **长期** | 核心驱动 SDK 独立拆分 | 在接口充分稳定后按 DAG 切分线评估拆出独立纯驱动包 | `hdc`, `ui`, `device`, `vision` |
+| **长期** | 核心驱动组件独立拆分 | 在接口充分稳定后按 DAG 切分线评估拆出独立纯驱动包 | `hdc`, `ui`, `device`, `vision` |
 | **仓外协同** | 外部 Broker 与插件生态演进（M4 已闭环 ✅） | 在独立仓库持续维护外部调度面与业务插件，保持对协议 v1 / Action API v1 的兼容演进 | 本仓之外 |
 
 ---
@@ -95,7 +95,7 @@
 
 ### 4.2 插件开发体验（DX）与契约测试生态
 
-- 新增 `plugins init`，从已安装 SDK 的模板生成独立工程，同步包名、模块名、动作 ID、测试及 CI。分发回归覆盖干净环境中的生成、构建、安装发现与离线契约，作者可以先运行示例，再逐步替换业务实现。
+- 新增 `plugins init`，从已安装 Pilot 的模板生成独立工程，同步包名、模块名、动作 ID、测试及 CI。分发回归覆盖干净环境中的生成、构建、安装发现与离线契约，作者可以先运行示例，再逐步替换业务实现。
 - 公共 `moyu_harmony_pilot.testing` 已提供 Fake 传输、假设备构建器、离线 I/O 护栏及可复用契约断言。生产模块保持对测试工具零依赖。
 - 独立插件模板复用公共工具，包含可安装的只读电量插件与通用三段式演示开关插件，使用合成 UI 验证发现、参数/指标、提交前预留、幂等、超时、敏感屏和过温边界。
 - Fake 支持按控件 ID 与包名声明预期点击序列，公共幂等断言会检查误点和遗漏。模板采用精确目标推进布局，并覆盖点击无关按钮时的失败回归。
@@ -118,13 +118,13 @@
 
 ---
 
-## 5. 长期架构演进：核心驱动 SDK 独立拆分
+## 5. 核心驱动组件的长期拆分规划
 
-依据 [docs/requirements.md](requirements.md) 确立的单向依赖 DAG：
+驱动组件与上层执行、接入层沿既有单向依赖 DAG 划分。[架构约定](requirements.md)
 
 ```text
-纯驱动 SDK 候选边界：hdc → ui → device (+ 可选 vision)
-上层执行与接入边界：actions → bridge / cli / mcp
+驱动组件候选边界    hdc → ui → device (+ 可选 vision)
+上层执行与接入边界  actions → bridge / cli / mcp
 ```
 
 待 HarmonyOS NEXT 多版本真机实践验证底层接口（`HdcClient`、`UiDriver`、`CompactSnapshot`、`HarmonyDevice`、`OcrEngine`）趋于稳定后，可按社区与生态需求评估将底层纯驱动包独立发布，供仅需 HarmonyOS NEXT Python 自动化驱动、无需 Bridge/MCP 的开发者零负担引入；`moyu-harmony-pilot` 保持对驱动包的组合封装与向后兼容。

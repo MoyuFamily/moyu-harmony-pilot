@@ -1010,7 +1010,7 @@ def _cmd_run(
     }[outcome.status]
     data: dict[str, Any] = {
         "alias": device.alias, "action": args.action, "dry_run": args.dry_run,
-        **outcome.to_dict(),
+        **outcome.to_dict(include_data=True),
     }
     if recording_info is not None:
         data["recording"] = recording_info

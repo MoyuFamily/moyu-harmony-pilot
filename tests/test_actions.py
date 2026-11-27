@@ -318,14 +318,28 @@ def test_thermal_and_sensitive_screen_guards(execution):
 
 def test_main_thread_timeout_preempts_plugin_sleep_and_restores_timer(execution):
     before_handler = signal.getsignal(signal.SIGALRM)
-    execution[2].submit_hook = lambda: time.sleep(2)
+    runner, device, parent, _, _ = execution
+    child = SampleMutation()
+    child.spec = replace(child.spec, action_id="example.slow_child")
+    child.submit_hook = lambda: time.sleep(2)
+    parent.spec = replace(parent.spec, min_pilot_version="0.2.1.dev0")
+    registry = ActionRegistry()
+    registry.register(parent)
+    registry.register(child)
+    runner.registry = registry
+    parent.submit = lambda ctx, inspection, params: ctx.call(
+        child.spec.action_id, {}, idempotency_key="child-timeout", timeout=0.1,
+    )
     started = time.monotonic()
-    assert run_mutation(execution, timeout=0.2).status == "unknown"
+    assert run_mutation(execution, timeout=3).status == "unknown"
     assert time.monotonic() - started < 1.5
     assert signal.getsignal(signal.SIGALRM) == before_handler
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
     assert not execution[1].is_busy()
     assert run_mutation(execution).status == "unknown"
+    assert child.calls.count("submit") == 1
+    records = ActionLedger(runner.state_dir / "actions.sqlite3").records()
+    assert {row["status"] for row in records} == {"unknown"}
 
 
 def test_deadline_interrupts_once_and_allows_bounded_cleanup(execution):
@@ -406,6 +420,7 @@ def test_external_entry_points_filter_before_import(monkeypatch):
     entry.load.assert_not_called()
     assert {item["action_id"] for item in registry.list()} == {
         "device.ping", "device.health", "ui.inspect", "app.install", "app.uninstall", "sms.open",
+        "sms.read", "files.query", "files.export", "record.start", "record.status", "record.stop",
     }
     registry = ActionRegistry.discover(env={}, remote=True, allowed_actions=["example.mutate"])
     entry.load.assert_called_once()

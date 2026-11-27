@@ -20,7 +20,7 @@
 
 ## 2. 分层分包与单向依赖铁律（DAG）
 
-`src/moyu_harmony_pilot/` 采用严格单向依赖，**禁止反向导入或循环依赖**，确保后期 `hdc + ui + device (+ vision)` 可无痛拆分为独立驱动 SDK：
+`src/moyu_harmony_pilot/` 采用严格单向依赖，**禁止反向导入或循环依赖**，确保后期 `hdc + ui + device (+ vision)` 可无痛拆分为独立驱动组件。
 
 ```text
 hdc        (L1: 仅依赖标准库 — 官方 hdc CLI 封装与文件收发)

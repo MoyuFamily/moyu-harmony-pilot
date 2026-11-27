@@ -14,7 +14,7 @@
 
 `moyu-harmony-pilot` 旨在提供一套**独立、轻量、无侵入、Agent 友好、生产级的纯血鸿蒙 Python 自动化引擎与安全任务派发桥**：
 
-1. **作为独立开源工具（Standalone Mode）**：开发者或 AI Agent 可直接通过 Python SDK 或机器优先的 CLI 驱动本机连接的纯血鸿蒙真机，完成控件树抓取、紧凑语义快照、UI 交互、截屏诊断、健康巡检及自定义插件动作执行，**不依赖任何外部平台或云端服务**。
+1. **独立开源工具模式（Standalone Mode）**支持开发者或 AI Agent 通过插件开发接口或机器优先的 CLI 驱动本机连接的纯血鸿蒙真机，独立完成控件树抓取、紧凑语义快照、UI 交互、截屏诊断、健康巡检及自定义插件动作执行。
 2. **作为边缘任务执行节点（Pull Bridge Mode）**：可通过标准、服务端无关的单向 HTTPS 出站协议，将 NAT 内网中的纯血鸿蒙真机安全接入任意兼容的外部调度器或控制面，在不暴露本地端口和调试通道的前提下完成远程任务派发与脱敏回执回收。
 3. **原生面向 AI Agent 时代（Agent-Friendly First）**：从接口契约、UI 语义压缩、自描述 Schema、防失控护栏到文档与 Skill 规范，原生适配现代 Coding Agent 与 Runtime Agent（CLI-First，并支持可选轻量 MCP 薄封装），让人类开发者与 AI Agent 都能低 Token、低歧义、高安全性地开发、调试和编排纯血鸿蒙真机任务。
 
@@ -97,7 +97,7 @@ flowchart LR
 
 ## 4. 单仓分包架构与可拆库设计
 
-前期保留单仓库维护以降低联调与发版成本，但内部按**严格单向依赖（DAG，禁止循环依赖）**分包，确保后期在需要时可将底层纯驱动 SDK 与运行时守护服务无痛拆分为独立发行包。
+前期保留单仓库维护以降低联调与发版成本，内部按**严格单向依赖（DAG，禁止循环依赖）**分包，确保后期在需要时可将底层驱动组件与运行时守护服务无痛拆分为独立发行包。
 
 ### 4.1 仓库与包目录规划
 
@@ -119,7 +119,7 @@ moyu-harmony-pilot/
 │   ├── ui/                          # L2: uitest dumpLayout 解析、UiNode 树、紧凑语义快照、选择器、手势交互
 │   ├── device/                      # L3: 设备抽象、alias 映射、锁、应用/电源/截屏、电池温度遥测、诊断落盘
 │   ├── vision/                      # L3(可选): OcrEngine 协议、macOS Vision / RapidOCR 适配器、弹窗 Watcher、SoM 标注
-│   ├── actions/                     # L4: ActionPlugin 契约、白名单注册表、插件发现、幂等账本、内置动作与示例
+│   ├── actions/                     # L4: ActionPlugin 契约、白名单注册表、插件发现、幂等账本、内部插件与示例
 │   ├── bridge/                      # L5: 标准 Pull Bridge 出站客户端、心跳、租约续期、退避重连
 │   ├── cli/                         # L5: 机器优先统一 CLI 入口（JSON 信封、语义退出码、Schema 自描述）
 │   └── mcp/                         # L5(可选): 轻量 MCP Server 薄适配层（复用 actions/device/ui，零重复逻辑）
@@ -140,7 +140,7 @@ hdc (仅依赖 Python 标准库)
               bridge     cli      mcp (可选薄适配)
 ```
 
-- **未来拆库切分线**：`hdc + ui + device (+ vision)` 天然构成零服务耦合的纯驱动 SDK；`actions + bridge + cli (+ mcp)` 构成任务执行、边缘接入与 Agent 工具层。只要严守上述单向依赖，拆库无需重写业务代码。
+- 未来可沿单向依赖拆分，`hdc + ui + device (+ vision)` 构成零服务耦合的驱动组件，`actions + bridge + cli (+ mcp)` 构成任务执行、边缘接入与 Agent 工具层。严格遵守上述依赖边界可支持拆库时复用业务代码。
 - **依赖分级（`pyproject.toml` optional extras）**：
   - 核心包（默认安装）：**仅依赖 Python 3.11+ 标准库**（Compact UI 压缩、JSON 信封、Schema 自描述与 Bridge 客户端均尽量零重依赖）。
   - `[mcp]`：可选标准 MCP Server 运行时依赖。
@@ -211,6 +211,8 @@ hdc (仅依赖 Python 标准库)
 
 ### FR-5：插件化 Action 框架与幂等防重（`moyu_harmony_pilot.actions`）
 
+面向用户的插件分为内部插件与外部插件，分别由 Pilot 随包提供和独立安装，发现描述以 `source=internal/external` 标明来源，并提供 `result_schema`、`private_content` 与 `lock_device`。Pilot `>=0.2.1.dev0` 的插件开发接口 `ctx.call(...)` 支持组合调用两类插件，共享设备锁与总预算，远程逐个校验授权。`ActionOutcome.data` 承载最多 1 MiB 的私有或结构化直接结果，默认 `to_dict()` 仅输出安全回执，本地 CLI 或显式私有 MCP 入口使用 `to_dict(include_data=True)`。私有正文限直接结果交付，Bridge 拒绝私有正文插件，参数与账本中的单条 JSON 载荷上限为 16 KiB。完整调用与恢复约定见[插件开发指南](actions.md)。
+
 1. **标准 `ActionPlugin` 契约**：
    - 每个插件声明元数据：`action_id`（如 `device.health`）、`version`、`description`、`side_effect`（只读 `readonly` / 有副作用 `mutating`）、参数校验 Schema、默认超时时间。
    - **只读动作**实现 `execute(ctx, params) -> ActionOutcome`。
@@ -231,12 +233,14 @@ hdc (仅依赖 Python 标准库)
      1. Python 包 `entry_points(group="moyu_harmony_pilot.actions")`（私有独立仓库 `pip install -e` 即可注册）；
      2. 本地插件目录显式配置（`HARMONY_PILOT_PLUGIN_PATHS`）。
    - **Fail-Closed 白名单**：即使发现了外部插件，在 Pull Bridge 模式下也**仅暴露**配置文件中显式加入 `allowed_actions` 白名单的动作给远端。
-5. **内置通用动作与脱敏示例（不含特定商业/民生业务）**：
-   - 内置通用系统动作：
+5. **内部通用插件与脱敏外部示例**提供通用操作和接口演示，具体商业或民生业务由仓外插件维护。
+
+   - 内部插件包括以下系统动作。
+
      - `device.ping`：验证 `hdc` 连通性与基本设备响应；
      - `device.health`：采集电量、充电态、电池温度、屏幕状态；
      - `ui.inspect`（仅限本地 CLI，不默认暴露给远端）：抓取并保存当前页面控件树摘要供开发调试。
-   - 内置脱敏示例插件（如 `example.settings_inspect`，仅演示 `ActionPlugin` 接口写法与测试方式，默认不在远程白名单中开启）。
+   - 随仓提供脱敏的外部插件示例（如 `example.settings_inspect`），用于演示 `ActionPlugin` 接口写法与测试方式，远程执行需显式白名单授权。
 
 ### FR-6：机器优先 CLI 工具（`moyu_harmony_pilot.cli`）
 
@@ -249,7 +253,7 @@ hdc (仅依赖 Python 标准库)
 | `harmony-pilot dump-ui --device <alias> [--compact] [--out <file>]` | 抓取当前界面控件树；`--compact` 输出带 `@eN` 引用的低 Token 语义快照 |
 | `harmony-pilot screenshot --device <alias> --out <file> [--max-width <px>] [--som]` | 截取当前屏幕；可选缩放与 Set-of-Mark（`@eN` 编号框）标注以服务多模态视觉 Agent |
 | `harmony-pilot schema` | 输出完整 CLI 命令、状态枚举、退出码与全局契约 JSON Schema（自描述） |
-| `harmony-pilot plugins list` | 列出已发现的内置与外部插件、副作用级别及其远程白名单状态 |
+| `harmony-pilot plugins list` | 列出已发现的内部与外部插件、副作用级别及其远程白名单状态 |
 | `harmony-pilot plugins describe <action_id>` | 输出单个 Action 插件的参数 JSON Schema、返回指标说明与安全级别 |
 | `harmony-pilot plugins validate <action_id> [--params-json ...] [--idempotency-key ...]` | **0.2.0rc1 已实现**，加载可信插件后离线预检参数与有副作用动作的幂等键，设备和远程白名单在实际执行时校验 |
 | `harmony-pilot run --device <alias> --action <id> [--idempotency-key ...] [--params-json ...] [--dry-run]` | 本地执行单个动作（`--dry-run` 仅校验配置/设备/参数，不触发 UI 交互） |

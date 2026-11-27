@@ -33,6 +33,7 @@ from moyu_harmony_pilot.device.errors import (
     DeviceError,
 )
 from moyu_harmony_pilot.device.lock import ensure_secure_dir
+from moyu_harmony_pilot.hdc import SubprocessHdcTransport
 
 if TYPE_CHECKING:
     from moyu_harmony_pilot.device.controller import HarmonyDevice
@@ -546,14 +547,22 @@ class ScreenRecorder:
 def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "posix":
+        # Reap workers started by this process before checking PID liveness.
+        try:
+            reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            pass
+        else:
+            if reaped_pid == pid:
+                return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
     except OSError:
-        return False
+        # An inconclusive probe must preserve the session for recovery.
+        return True
     return True
 
 
@@ -624,6 +633,14 @@ class RecordingSessionManager:
         startup_timeout: float = 15.0,
     ) -> RecordingSessionInfo:
         """Launch a detached background recording session for `device`."""
+        if (
+            type(startup_timeout) not in (int, float)
+            or not math.isfinite(startup_timeout)
+            or startup_timeout <= 0
+        ):
+            raise DeviceConfigurationError(
+                "startup_timeout must be a finite positive number."
+            )
         resolved_out = validate_recording_options(
             output_path=output_path,
             fps=fps,
@@ -655,14 +672,14 @@ class RecordingSessionManager:
 
         session_id = uuid.uuid4().hex[:12]
         rec_dir = ensure_secure_dir(self._state_dir / "recordings")
-        session_dir = ensure_secure_dir(rec_dir / f"session_{session_id}")
+        session_dir = rec_dir / f"session_{session_id}"
         ready_file = session_dir / "ready.json"
         stop_file = session_dir / "stop"
         result_file = session_dir / "result.json"
         error_file = session_dir / "error.json"
         started_at = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        worker_payload = {
+        worker_payload: dict[str, Any] = {
             "session_id": session_id,
             "alias": device.alias,
             "serial": device.profile.serial,
@@ -674,6 +691,7 @@ class RecordingSessionManager:
             "max_width": max_width,
             "display_id": display_id,
             "hdc_path": hdc_path or (str(device._hdc.hdc_path) if device._hdc.hdc_path else None),
+            "hdc_default_timeout": device._hdc._default_timeout,
             "ffmpeg_path": str(ffmpeg_bin),
             "session_dir": str(session_dir.resolve()),
             "ready_file": str(ready_file.resolve()),
@@ -681,70 +699,99 @@ class RecordingSessionManager:
             "result_file": str(result_file.resolve()),
             "error_file": str(error_file.resolve()),
         }
+        transport = device._hdc.transport
+        if isinstance(transport, SubprocessHdcTransport):
+            worker_payload["hdc_env"] = dict(transport._env)
+            worker_payload["hdc_transport_timeout"] = transport._default_timeout
 
-        proc = subprocess.Popen(  # noqa: S603
-            [sys.executable, "-m", "moyu_harmony_pilot.device.recording"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        assert proc.stdin is not None
+        proc: subprocess.Popen[bytes] | None = None
         try:
-            proc.stdin.write(json.dumps(worker_payload).encode("utf-8"))
-            proc.stdin.close()
-        except OSError as exc:
-            proc.terminate()
-            shutil.rmtree(session_dir, ignore_errors=True)
-            raise DeviceError(
-                "Failed to hand off recording configuration to worker.",
-                code="recording_start_failed",
-            ) from exc
+            ensure_secure_dir(session_dir)
+            deadline = time.monotonic() + float(startup_timeout)
+            proc = subprocess.Popen(  # noqa: S603
+                [sys.executable, "-m", "moyu_harmony_pilot.device.recording"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(json.dumps(worker_payload).encode("utf-8"))
+                proc.stdin.close()
+            except OSError as exc:
+                raise DeviceError(
+                    "Failed to hand off recording configuration to worker.",
+                    code="recording_start_failed",
+                ) from exc
 
-        deadline = time.monotonic() + max(1.0, float(startup_timeout))
-        while time.monotonic() < deadline:
-            if ready_file.is_file():
-                break
-            if error_file.is_file():
-                err_data = _read_session_record(error_file) or {}
-                shutil.rmtree(session_dir, ignore_errors=True)
+            while time.monotonic() < deadline:
+                if ready_file.is_file():
+                    break
+                if error_file.is_file():
+                    err_data = _read_session_record(error_file) or {}
+                    raise DeviceError(
+                        str(err_data.get("message") or "Recording worker failed during startup."),
+                        code=str(err_data.get("code") or "recording_start_failed"),
+                    )
+                if proc.poll() is not None:
+                    raise DeviceError(
+                        f"Recording worker exited prematurely (code={proc.returncode}).",
+                        code="recording_start_failed",
+                    )
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            else:
                 raise DeviceError(
-                    str(err_data.get("message") or "Recording worker failed during startup."),
-                    code=str(err_data.get("code") or "recording_start_failed"),
-                )
-            if proc.poll() is not None:
-                shutil.rmtree(session_dir, ignore_errors=True)
-                raise DeviceError(
-                    f"Recording worker exited prematurely (code={proc.returncode}).",
+                    "Timed out waiting for recording worker to capture the initial frame.",
                     code="recording_start_failed",
                 )
-            time.sleep(0.05)
-        else:
-            proc.terminate()
-            shutil.rmtree(session_dir, ignore_errors=True)
-            raise DeviceError(
-                "Timed out waiting for recording worker to capture the initial frame.",
-                code="recording_start_failed",
-            )
 
-        # Public/private metadata on disk intentionally excludes raw serial.
-        metadata = {
-            "session_id": session_id,
-            "alias": device.alias,
-            "pid": proc.pid,
-            "output_path": str(resolved_out.resolve()),
-            "started_at": started_at,
-            "max_duration": float(max_duration),
-            "fps": float(fps),
-            "max_width": max_width,
-            "display_id": display_id,
-            "session_dir": str(session_dir.resolve()),
-            "stop_file": str(stop_file.resolve()),
-            "result_file": str(result_file.resolve()),
-            "error_file": str(error_file.resolve()),
-        }
-        write_secure_text(session_path, json.dumps(metadata, ensure_ascii=False, indent=2))
-        return _session_info_from_record(metadata, active=True)
+            # Persist only session metadata. Device credentials and transport stay on stdin.
+            metadata = {
+                "session_id": session_id,
+                "alias": device.alias,
+                "pid": proc.pid,
+                "output_path": str(resolved_out.resolve()),
+                "started_at": started_at,
+                "max_duration": float(max_duration),
+                "fps": float(fps),
+                "max_width": max_width,
+                "display_id": display_id,
+                "session_dir": str(session_dir.resolve()),
+                "stop_file": str(stop_file.resolve()),
+                "result_file": str(result_file.resolve()),
+                "error_file": str(error_file.resolve()),
+            }
+            metadata_file = session_dir / "session.json"
+            write_secure_text(metadata_file, json.dumps(metadata, ensure_ascii=False, indent=2))
+            os.replace(metadata_file, session_path)
+            return _session_info_from_record(metadata, active=True)
+        except BaseException:
+            try:
+                if proc is not None:
+                    try:
+                        if proc.poll() is None:
+                            with suppress(ProcessLookupError):
+                                proc.terminate()
+                        with suppress(subprocess.TimeoutExpired):
+                            proc.wait(timeout=2.0)
+                    finally:
+                        # A budget interruption during graceful shutdown still reaps the worker.
+                        if proc.poll() is None:
+                            with suppress(ProcessLookupError):
+                                proc.kill()
+                        proc.wait()
+            finally:
+                if proc is not None and proc.stdin is not None:
+                    with suppress(OSError):
+                        proc.stdin.close()
+                # Reap the worker before removing paths it may still be using.
+                if proc is None or proc.poll() is not None:
+                    published = _read_session_record(session_path)
+                    if published is not None and published.get("session_id") == session_id:
+                        session_path.unlink(missing_ok=True)
+                    shutil.rmtree(session_dir, ignore_errors=True)
+            raise
 
     def stop(
         self,
@@ -753,6 +800,13 @@ class RecordingSessionManager:
         timeout: float = 45.0,
     ) -> RecordingResult:
         """Stop an active recording session, wait for MP4 encoding, and return its result."""
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise DeviceConfigurationError("timeout must be a finite positive number.")
+        deadline = time.monotonic() + float(timeout)
         session_path = self._session_path(device.profile.serial)
         record = _read_session_record(session_path)
         if record is None:
@@ -771,32 +825,21 @@ class RecordingSessionManager:
             if not result_file.is_file() and not error_file.is_file():
                 if stop_file.parent.is_dir():
                     write_secure_text(stop_file, "stop\n")
-                if _is_pid_alive(pid):
-                    deadline = time.monotonic() + max(1.0, float(timeout))
-                    signalled = False
-                    while time.monotonic() < deadline:
-                        if result_file.is_file() or error_file.is_file():
-                            break
-                        if not _is_pid_alive(pid):
-                            break
-                        if not signalled and time.monotonic() > deadline - (timeout * 0.75):
-                            try:
-                                os.kill(pid, signal.SIGTERM)
-                            except OSError:
-                                pass
-                            signalled = True
-                        time.sleep(0.05)
-                    else:
-                        if _is_pid_alive(pid):
-                            try:
-                                os.kill(pid, signal.SIGKILL)
-                            except OSError:
-                                pass
-                        raise DeviceError(
-                            f"Timed out waiting for recording session {record['session_id']!r} "
-                            "to finish encoding.",
-                            code="recording_stop_timeout",
-                        )
+            signalled = False
+            while _is_pid_alive(pid):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DeviceError(
+                        f"Timed out waiting for recording session {record['session_id']!r} "
+                        "to finish encoding.",
+                        code="recording_stop_timeout",
+                        hint="Retry `harmony-pilot record stop` to collect the recording result.",
+                    )
+                if not signalled and remaining < timeout * 0.75:
+                    with suppress(OSError):
+                        os.kill(pid, signal.SIGTERM)
+                    signalled = True
+                time.sleep(min(0.05, remaining))
 
             if error_file.is_file():
                 err_data = _read_session_record(error_file) or {}
@@ -829,8 +872,12 @@ class RecordingSessionManager:
                 stopped_reason=str(result_data.get("stopped_reason", "stopped")),
             )
         finally:
-            session_path.unlink(missing_ok=True)
-            shutil.rmtree(session_dir, ignore_errors=True)
+            # An interrupted wait leaves a live session available to status/stop retries.
+            if not _is_pid_alive(pid):
+                current = _read_session_record(session_path)
+                if current is not None and current.get("session_id") == record["session_id"]:
+                    session_path.unlink(missing_ok=True)
+                shutil.rmtree(session_dir, ignore_errors=True)
 
 
 def _run_worker_main() -> int:
@@ -858,7 +905,13 @@ def _run_worker_main() -> int:
     signal.signal(signal.SIGINT, _handle_signal)
 
     try:
-        hdc = HdcClient(hdc_path=payload.get("hdc_path"))
+        default_timeout = float(payload.get("hdc_default_timeout", 15.0))
+        transport = SubprocessHdcTransport(
+            hdc_path=payload.get("hdc_path"),
+            env=payload.get("hdc_env"),
+            default_timeout=float(payload.get("hdc_transport_timeout", default_timeout)),
+        )
+        hdc = HdcClient(transport=transport, default_timeout=default_timeout)
         profile = DeviceProfile(
             alias=str(payload["alias"]),
             serial=str(payload["serial"]),

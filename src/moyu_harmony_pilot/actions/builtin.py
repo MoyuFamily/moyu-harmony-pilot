@@ -6,8 +6,10 @@ import json
 from typing import Any
 
 from moyu_harmony_pilot.actions.apps import AppInstall, AppUninstall
+from moyu_harmony_pilot.actions.files import FilesExport, FilesQuery
 from moyu_harmony_pilot.actions.models import ActionContext, ActionOutcome, ActionPlugin, ActionSpec
-from moyu_harmony_pilot.actions.sms import SmsOpen
+from moyu_harmony_pilot.actions.recording import RecordingStart, RecordingStatus, RecordingStop
+from moyu_harmony_pilot.actions.sms import SmsOpen, SmsRead
 
 
 def metric_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -109,4 +111,8 @@ class UiInspect(ActionPlugin):
 
 
 def builtin_plugins() -> tuple[ActionPlugin, ...]:
-    return DevicePing(), DeviceHealth(), UiInspect(), AppInstall(), AppUninstall(), SmsOpen()
+    return (
+        DevicePing(), DeviceHealth(), UiInspect(), AppInstall(), AppUninstall(), SmsOpen(),
+        SmsRead(), FilesQuery(), FilesExport(),
+        RecordingStart(), RecordingStatus(), RecordingStop(),
+    )

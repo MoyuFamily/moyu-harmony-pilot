@@ -86,7 +86,11 @@ class InteractionSession:
             if self.context.stage not in {"readonly", "inspect", "preparing", "submit", "confirm"}:
                 raise DeviceConfigurationError("Action context is no longer executing.")
             self.context.checkpoint()
-            result = callback()
+            if self.context._holds_device_lock:
+                result = callback()
+            else:
+                with self.device.acquire_lock():
+                    result = callback()
             _ = self.context.remaining_timeout
             return result
         ensure_deadline_available()

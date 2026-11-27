@@ -294,6 +294,7 @@ class BridgeWorker:
                         ),
                         cancelled=lease.cancelled,
                         on_stage=lease.set_stage,
+                        allowed_actions=self.config.allowed_actions[job.device_alias],
                     )
         except DeviceConfigurationError:
             outcome = ActionOutcome(status="configuration_error", error_code="configuration_error")

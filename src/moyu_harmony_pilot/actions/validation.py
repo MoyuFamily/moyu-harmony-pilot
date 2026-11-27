@@ -11,6 +11,7 @@ from moyu_harmony_pilot.device import DeviceConfigurationError
 
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 MAX_JSON_BYTES = 16 * 1024
+MAX_RESULT_BYTES = 1024 * 1024
 SCHEMA_KEYWORDS = frozenset(
     {
         "type",
@@ -32,22 +33,26 @@ _TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 
 
 @overload
-def json_copy(value: dict[str, Any]) -> dict[str, Any]: ...
+def json_copy(
+    value: dict[str, Any], *, max_bytes: int = MAX_JSON_BYTES,
+) -> dict[str, Any]: ...
 
 
 @overload
-def json_copy(value: Any) -> Any: ...
+def json_copy(value: Any, *, max_bytes: int = MAX_JSON_BYTES) -> Any: ...
 
 
-def json_copy(value: Any) -> Any:
+def json_copy(value: Any, *, max_bytes: int = MAX_JSON_BYTES) -> Any:
     """Copy a finite JSON value with a bounded encoded size."""
     try:
         encoded = json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True)
-        if len(encoded) > MAX_JSON_BYTES:
+        if len(encoded) > max_bytes:
             raise ValueError
         return json.loads(encoded)
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
-        raise DeviceConfigurationError("Expected finite JSON within the 16 KiB limit.") from exc
+        raise DeviceConfigurationError(
+            f"Expected finite JSON within the {max_bytes // 1024} KiB limit."
+        ) from exc
 
 
 def _enum_equal(value: Any, candidate: Any) -> bool:

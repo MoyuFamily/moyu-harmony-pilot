@@ -17,6 +17,7 @@ from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions.models import (
     ACTION_API_VERSION,
     CONTEXT_API_MIN_VERSION,
+    PLUGIN_CALL_MIN_VERSION,
     ActionPlugin,
     ActionSpec,
     IdempotentAction,
@@ -68,8 +69,11 @@ class ActionRegistry:
         self.pilot_version = resolved_version
         self._plugins: dict[str, ActionPlugin] = {}
         self._specs: dict[str, ActionSpec] = {}
+        self._sources: dict[str, str] = {}
 
-    def register(self, plugin: ActionPlugin) -> None:
+    def register(self, plugin: ActionPlugin, *, source: str = "external") -> None:
+        if source not in {"internal", "external"}:
+            raise DeviceConfigurationError("Invalid plugin source.")
         if not isinstance(plugin, ActionPlugin) or not isinstance(
             getattr(plugin, "spec", None), ActionSpec
         ):
@@ -99,12 +103,28 @@ class ActionRegistry:
             or spec.timeout_seconds <= 0
             or type(spec.local_only) is not bool
             or type(spec.diagnostic) is not bool
+            or type(spec.private_content) is not bool
+            or type(spec.lock_device) is not bool
         ):
             raise DeviceConfigurationError("Invalid action metadata.")
         if (spec.side_effect == "mutating") != isinstance(plugin, IdempotentAction):
             raise DeviceConfigurationError("Mutating actions must implement IdempotentAction.")
         if spec.side_effect == "mutating" and spec.diagnostic:
             raise DeviceConfigurationError("Mutating actions must use thermal protection.")
+        if spec.side_effect == "mutating" and not spec.lock_device:
+            raise DeviceConfigurationError("Mutating plugins must acquire the device lock.")
+        if spec.result_schema is not None or spec.private_content or not spec.lock_device:
+            if spec.min_pilot_version is None or not is_version_compatible(
+                spec.min_pilot_version, PLUGIN_CALL_MIN_VERSION
+            ):
+                raise DeviceConfigurationError(
+                    "Plugin result metadata requires "
+                    f"min_pilot_version >= {PLUGIN_CALL_MIN_VERSION}."
+                )
+        if spec.result_schema is not None:
+            check_schema(spec.result_schema)
+            if spec.result_schema["type"] != "object":
+                raise DeviceConfigurationError("Plugin results must be JSON objects.")
         check_schema(spec.params_schema)
         if spec.params_schema["type"] != "object":
             raise DeviceConfigurationError("Parameters and metrics must be JSON objects.")
@@ -128,8 +148,11 @@ class ActionRegistry:
             raise DeviceConfigurationError("Duplicate action ID in plugin discovery.")
         self._plugins[spec.action_id] = plugin
         self._specs[spec.action_id] = spec
+        self._sources[spec.action_id] = source
 
-    def get(self, action_id: str, *, remote: bool = False) -> tuple[ActionPlugin, ActionSpec]:
+    def get(
+        self, action_id: str, *, remote: bool = False, private_actions: Iterable[str] = (),
+    ) -> tuple[ActionPlugin, ActionSpec]:
         if remote and action_id not in self.allowed_actions:
             raise DeviceConfigurationError("Action is outside the remote allowlist.")
         if action_id not in self._plugins:
@@ -137,13 +160,21 @@ class ActionRegistry:
         spec = self._specs[action_id]
         if remote and spec.local_only:
             raise DeviceConfigurationError("This action is restricted to local execution.")
+        if remote and spec.private_content and action_id not in private_actions:
+            raise DeviceConfigurationError(
+                "Private plugin requires explicit startup authorization."
+            )
         return self._plugins[action_id], ActionSpec(**spec.to_dict())
 
-    def describe(self, action_id: str) -> dict[str, Any]:
+    def describe(self, action_id: str, *, private_actions: Iterable[str] = ()) -> dict[str, Any]:
         _, spec = self.get(action_id)
         return {
             **spec.to_dict(),
-            "remote_allowed": (action_id in self.allowed_actions and not spec.local_only),
+            "source": self._sources[action_id],
+            "remote_allowed": (
+                action_id in self.allowed_actions and not spec.local_only
+                and (not spec.private_content or action_id in private_actions)
+            ),
         }
 
     def list(self) -> list[dict[str, Any]]:
@@ -163,7 +194,7 @@ class ActionRegistry:
 
         registry = cls(allowed_actions=allowed_actions, pilot_version=pilot_version)
         for plugin in builtin_plugins():
-            registry.register(plugin)
+            registry.register(plugin, source="internal")
         environment = os.environ if env is None else env
         try:
             entries = sorted(

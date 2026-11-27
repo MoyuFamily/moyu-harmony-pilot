@@ -6,7 +6,12 @@ from typing import Any
 
 from moyu_harmony_pilot import __version__
 from moyu_harmony_pilot.actions import ACTION_API_VERSION, ActionStatus
-from moyu_harmony_pilot.actions.validation import MAX_JSON_BYTES, SCHEMA_KEYWORDS
+from moyu_harmony_pilot.actions.models import PLUGIN_CALL_MIN_VERSION
+from moyu_harmony_pilot.actions.validation import (
+    MAX_JSON_BYTES,
+    MAX_RESULT_BYTES,
+    SCHEMA_KEYWORDS,
+)
 from moyu_harmony_pilot.cli.codes import EXIT_CODE_DESCRIPTIONS
 from moyu_harmony_pilot.cli.envelope import SCHEMA_VERSION
 from moyu_harmony_pilot.cli.operations import OPERATION_SCHEMAS
@@ -61,6 +66,15 @@ def build_cli_schema() -> dict[str, Any]:
             "local_plugin_manifest": "actions.json",
             "execution_thread": "main",
             "context_api_min_pilot_version": "0.2.0.dev0",
+            "plugin_sources": ["internal", "external"],
+            "context_call": "ctx.call(action_id, params, idempotency_key=None, timeout=None)",
+            "context_call_min_pilot_version": PLUGIN_CALL_MIN_VERSION,
+            "context_call_max_nesting": 8,
+            "context_call_mutating_stages": ["preparing", "submit"],
+            "context_call_inherits_authorization": True,
+            "result_schema_field": "result_schema",
+            "max_result_json_bytes": MAX_RESULT_BYTES,
+            "result_data_persisted": False,
             "minimum_version_field": "min_pilot_version",
             "inspection_metrics_schema_field": "inspection_metrics_schema",
             "required_metrics_scope": "successful_final_receipts",

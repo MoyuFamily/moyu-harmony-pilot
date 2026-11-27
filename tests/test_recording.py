@@ -11,7 +11,15 @@ from typing import Any
 
 import pytest
 
-from moyu_harmony_pilot.actions import ActionOutcome, ActionPlugin, ActionRegistry, ActionSpec
+from moyu_harmony_pilot.actions import (
+    ActionOutcome,
+    ActionPlugin,
+    ActionRegistry,
+    ActionRunner,
+    ActionSpec,
+)
+from moyu_harmony_pilot.actions.models import ActionBudgetExceeded
+from moyu_harmony_pilot.actions.recording import RecordingStart, RecordingStatus, RecordingStop
 from moyu_harmony_pilot.cli import ExitCode, build_cli_schema
 from moyu_harmony_pilot.device import (
     DeviceBusyError,
@@ -160,10 +168,11 @@ def test_recording_session_start_status_stop_and_privacy_boundaries(
     monkeypatch.setattr(recording_mod, "_is_pid_alive", lambda pid: pid in alive_pids)
 
     orig_write_text = recording_mod.write_secure_text
+    finish_on_stop = False
 
     def _finish_on_stop_touch(path: str | Path, text: str) -> Path:
         written = orig_write_text(path, text)
-        if Path(path).name == "stop" and stdin_payloads:
+        if Path(path).name == "stop" and stdin_payloads and finish_on_stop:
             payload = stdin_payloads[-1]
             out_file = Path(payload["output_path"])
             out_file.write_bytes(b"mp4-bytes")
@@ -191,10 +200,20 @@ def test_recording_session_start_status_stop_and_privacy_boundaries(
     monkeypatch.setattr(recording_mod, "write_secure_text", _finish_on_stop_touch)
 
     manager = RecordingSessionManager(tmp_path / ".state")
+    registry = ActionRegistry()
+    registry.register(RecordingStart())
+    registry.register(RecordingStatus())
+    registry.register(RecordingStop())
+    runner = ActionRunner(registry, state_dir=tmp_path / ".state")
     out_mp4 = tmp_path / "acceptance.mp4"
-    info = manager.start(device, out_mp4, fps=2.0, max_duration=30.0)
-    assert info.active is True
-    assert info.alias == "qa-phone"
+    with device.acquire_lock():
+        started = runner.run(device, "record.start", {
+            "out": str(out_mp4), "fps": 2.0, "max_duration": 30.0,
+        })
+    assert started.status == "succeeded", started
+    info = started.data
+    assert info is not None and info["active"] is True
+    assert info["alias"] == "qa-phone"
 
     # Raw serial must NEVER appear in worker CLI argv or on-disk session metadata/filenames.
     assert raw_serial not in json.dumps(spawned_argv)
@@ -208,13 +227,31 @@ def test_recording_session_start_status_stop_and_privacy_boundaries(
     with pytest.raises(DeviceBusyError):
         manager.start(device, out_mp4)
 
+    status = runner.run(device, "record.status", {})
+    assert status.data is not None and status.data["active"] is True
+
+    def _interrupt_stop_wait(_delay: float) -> None:
+        raise ActionBudgetExceeded
+
+    session_dir = Path(stdin_payloads[-1]["session_dir"])
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(recording_mod.time, "sleep", _interrupt_stop_wait)
+        with pytest.raises(ActionBudgetExceeded):
+            manager.stop(device)
+    assert session_files[0].is_file()
+    assert session_dir.is_dir()
+    assert Path(stdin_payloads[-1]["stop_file"]).is_file()
     status = manager.status(device)
     assert status is not None and status.active is True
+    assert status.session_id == info["session_id"] and status.pid == info["pid"]
 
-    result = manager.stop(device)
-    assert result.path == out_mp4.resolve()
-    assert result.frame_count == 4
+    finish_on_stop = True
+    stopped = runner.run(device, "record.stop", {})
+    assert stopped.status == "succeeded", stopped
+    assert stopped.data is not None and stopped.data["path"] == str(out_mp4.resolve())
+    assert stopped.data["frame_count"] == 4
     assert manager.status(device) is None
+    assert not session_dir.exists()
 
     # Stale dead-PID session metadata is automatically reclaimed on next start.
     stale_file = rec_dir / f"session_{recording_mod._device_session_key(raw_serial)}.json"

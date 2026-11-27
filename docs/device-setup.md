@@ -81,7 +81,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 # 校验 CLI 入口与基础包
 .venv/bin/harmony-pilot --version
-.venv/bin/python -m pytest -q -x tests/test_package.py
+.venv/bin/python -m pytest -q -x tests/test_cli.py::test_schema_command_offline_and_synced_with_parser
 ```
 
 （若未安装 `uv`，也可使用 `python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"`。）

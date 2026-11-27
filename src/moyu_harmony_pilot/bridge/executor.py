@@ -63,6 +63,7 @@ def _run_action(
                 timeout=min(job.timeout_seconds, (job.expires_at - utc_now()).total_seconds()),
                 cancelled=lambda: cancelled.is_set() or os.getppid() != parent_pid,
                 on_stage=lambda stage: channel.send(("stage", stage)),
+                allowed_actions=config.allowed_actions[job.device_alias],
             )
     except DeviceConfigurationError:
         outcome = ActionOutcome(status="configuration_error", error_code="configuration_error")

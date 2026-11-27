@@ -2,7 +2,7 @@
 
 > **面向纯血鸿蒙（HarmonyOS NEXT 5 / 6+，API 12+）的轻量、无侵入 Python 自动化引擎与安全出站任务桥。**
 
-`moyu-harmony-pilot` 是一款独立、通用的纯血鸿蒙真机自动化框架。它完全基于华为官方 `hdc` 与原生 `uitest` 工具链驱动真机，**无需在手机端安装任何辅助 App 或 Agent**；既可以直接通过命令行 / Python SDK 本机使用，也能通过服务端无关的 HTTPS 单向出站协议，把内网宿主机上连接的真机安全接入任意兼容的远端调度系统。
+`moyu-harmony-pilot` 是一款独立、通用的纯血鸿蒙真机自动化框架。它完全基于华为官方 `hdc` 与原生 `uitest` 工具链驱动真机，**无需在手机端安装任何辅助 App 或 Agent**。通用操作由随 Pilot 分发的内部插件提供，具体业务由独立安装的外部插件维护。用户通过 CLI、MCP 或 Pull Bridge 调用，插件之间通过 `ctx.call(...)` 组合执行。
 
 ---
 
@@ -11,11 +11,11 @@
 - **专注纯血鸿蒙原生链路**：仅面向 HarmonyOS NEXT（5 / 6+），直接使用官方 `hdc`、`uitest`、`aa`、`hidumper`、`power-shell`、`snapshot_display`，不背负 Android / ADB 历史包袱。
 - **零手机端侵入**：无需 Root、无需解锁 Bootloader、无需安装测试 HAP，也不依赖易随系统升级失效的私有守护进程逆向协议。
 - **核心零重依赖**：默认安装仅依赖 Python 3.11+ 标准库；视觉标注、OCR 引擎和 MCP 服务均作为按需安装的可选扩展。
-- **独立运行、生态解耦**：单机 CLI / Python SDK 开箱即用；远程派发采用公开、服务端无关的 HTTP Pull 协议，不绑定任何特定云端平台或调度器。
-- **默认安全（Fail-Closed）与插件化**：具体业务流程留在外部 `ActionPlugin` 插件中维护；远端调度侧只能触发宿主机白名单显式放行的动作，绝不开放任意 Shell 透传。
+- **本地 CLI 开箱即用**，远程派发采用公开、服务端无关的 HTTP Pull 协议，可接入兼容的远端调度系统。
+- **内部插件与外部插件共享动作契约**，远程调用对父动作和每个子动作分别检查白名单、私有内容与本地执行限制，并禁止任意 Shell 透传。
 - **原生适配 AI Agent**：提供统一 JSON 信封与稳定退出码（`0`–`6`）、低 Token 紧凑语义快照（`@e1` / `@e2` 引用 + `layout_hash`）、自描述契约（`harmony-pilot schema`）、防失控护栏、标准 Agent Skill 与可选轻量 MCP 适配层。
-- **手机文件查询与导出** — 按图库名称查询媒体 URI，通过本地 CLI / Python SDK 将图片、视频、音频和文档按原始字节导出到指定文件。
-- **单向分层架构**：内部包按 `hdc → ui → device / vision → actions → bridge / cli / mcp` 严格单向依赖，并由自动化架构测试守护，便于后期按需拆分纯驱动 SDK。
+- **短信、文件与录屏由内部插件提供**。`sms.open/read` 提供短信导航与私有结构化读取，`files.query/export` 查询媒体 URI 并按原始字节导出文件，`record.start/status/stop` 管理可并行业务的录屏会话。外部插件从 `0.2.1` 起可通过 `ctx.call(...)` 复用，调用入口遵循各自授权与结果边界。
+- 内部包按 `hdc → ui → device / vision → actions → bridge / cli / mcp` 严格单向依赖，并由自动化架构测试守护，便于后期按需拆分驱动组件。
 
 **长期优先方向**：持续降低外部插件的开发、测试、接入与维护成本，让开发侧 Agent 能依据公开契约和示例协作，让运行侧 Agent 能发现能力、理解结果并安全处理异常与人工接管。后续设计和变更以此作为取舍与验收依据，同时坚守安全、幂等和公开仓库边界。现有能力及待办分别见下方项目进展与[路线图](docs/roadmap.md)。
 
@@ -60,8 +60,8 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 - **[创建与离线验证业务插件](docs/actions.md#从离线工程开始)** — 使用 `harmony-pilot plugins init ../team-pilot --namespace team` 生成独立工程，安装后运行 `python -m tests`，再逐步替换业务实现和测试场景。
 - **[应用管理、文件导出、交互与运行诊断](docs/app-management.md)** — HAP 下载部署、应用查询、图库查询与单文件导出、引用式输入、账本对账、多设备执行与离线可视化检查和报告。
-- **[系统短信与验证码读取](docs/sms.md)** — 读取当前短信、等待新消息，以及通过 SSH 或显式启用的 MCP 工具获取验证码。
-- **[Action 插件与本地执行](docs/actions.md)** — 插件发现机制、参数与回执 Schema、执行预算、SQLite 幂等账本、视觉标注/OCR 与受控交互。
+- **系统短信与验证码读取** — 本机、SSH、显式启用的 MCP 入口，以及外部插件准备阶段的短信调用与隐私处理。[使用说明](docs/sms.md)
+- **Action 插件与本地执行** — 内部／外部插件发现、`ctx.call` 组合调用、私有结果、执行预算与 SQLite 幂等账本。[开发指南](docs/actions.md)
 - **[独立插件模板](examples/plugin-template/README.md)** — 开箱即用的独立插件工程模板、API 兼容性声明、离线契约测试与 CI 配置。
 - **[插件目录与维护指南](docs/plugin-catalog.md)** — 仓库通用示例清单、社区插件登记方式与插件上线/升级/下线流程。
 

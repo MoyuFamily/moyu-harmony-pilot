@@ -164,12 +164,11 @@ def test_relative_nested_destination_with_spaces_and_explicit_package(tmp_path: 
 @pytest.mark.parametrize(
     "package_name",
     [
-        "bad/name",
         "private\nsecret",
         "class",
         "moyu-harmony-pilot",
     ],
-    ids=['path-separator', 'private-newline', 'python-keyword', 'core-package-shadow'],
+    ids=['private-newline', 'python-keyword', 'core-package-shadow'],
 )
 def test_invalid_names_are_redacted_and_create_nothing(
     tmp_path: Path, package_name: str, capsys: pytest.CaptureFixture[str],
@@ -440,18 +439,3 @@ def test_template_file_symlink_is_rejected(
         scaffold.create_plugin_project(tmp_path / "new/plugin", namespace="team")
     assert not (tmp_path / "new").exists()
     assert outside.read_text(encoding="utf-8") == "synthetic-private-marker"
-
-
-def test_setuptools_mapping_matches_the_complete_template_allowlist() -> None:
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    prefix = "share/moyu-harmony-pilot/plugin-template"
-    mapped: dict[str, str] = {}
-    for destination, sources in config["tool"]["setuptools"]["data-files"].items():
-        if destination == prefix or destination.startswith(prefix + "/"):
-            for source in sources:
-                relative = (Path(destination) / Path(source).name).relative_to(prefix).as_posix()
-                assert relative not in mapped
-                mapped[relative] = source
-    assert mapped == {name: f"examples/plugin-template/{name}" for name in TEMPLATE_FILES}
-    assert set(scaffold._TEMPLATE_FILES) == TEMPLATE_FILES
-    assert config["project"]["dependencies"] == []

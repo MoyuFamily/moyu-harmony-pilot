@@ -4,13 +4,29 @@
 
 ---
 
-## 未发布
+## [0.2.1] - 2026-11-28
 
-- 新增本地 `files query` 与 `files export`，支持按图库名称查询有序媒体 URI 列表，并将图片、视频、音频和文档逐个按原始字节导出。普通文件通过 `hdc` 拉取，媒体 URI 和图库 Photo 路径通过 `mediatool` 受管临时文件导出。
-- 导出返回文件大小、SHA-256、传输方式及待清理项，默认拒绝覆盖已有目标，显式 `--overwrite` 成功后原子替换，失败保留旧文件。导出文件采用 `0600` 权限，本地临时目录采用 `0700` 权限，设备临时文件清理另有 10 秒预算。
-- 新增 `HarmonyDevice.query_media()` 与 `HarmonyDevice.export_file()` SDK 入口，由调用方持有设备锁。CLI 自动管理设备锁，并通过 `schema` 提供参数和结果契约。
+统一内部／外部插件调用契约，支持业务插件组合调用通用操作，并发布本地文件与相册导出。
 
-文件查询与导出当前为离线实现，真机验收待完成。
+### 新增与改进
+
+- 新增 `ctx.call(action_id, params=None, *, idempotency_key=None, timeout=None)`，可调用内部或外部插件，返回 `ActionOutcome`，共享设备锁、总时间和步数预算，失败状态自动向上传递。
+- 新增内部插件 `sms.read`、`files.query`、`files.export`、`record.start`、`record.status`、`record.stop`。已有 `sms.open`、`app.install`、`app.uninstall` 等统一标记为内部插件，CLI 与 MCP 提供各自受控调用入口。
+- 新增本地 `files query/export`，支持按图库名称查询媒体 URI，将图片、视频、音频和文档逐个按原始字节导出。普通文件经 `hdc` 拉取，媒体 URI 与图库 Photo 路径经 `mediatool` 受管临时文件导出。结果包含大小、SHA-256、传输方式与待清理项，文件权限为 `0600`，显式 `--overwrite` 成功后原子替换，失败保留旧文件。
+- 新增结构化直接结果 `ActionOutcome.data`，上限 1 MiB。默认 `to_dict()` 输出安全回执，本地 CLI 或显式私有 MCP 入口通过 `to_dict(include_data=True)` 交付直接结果。私有正文仅留在调用结果中，参数与账本单条 JSON 载荷上限为 16 KiB。
+- 完善组合动作幂等保护。有副作用子动作限父 `prepare/submit` 阶段调用并使用稳定幂等键。子动作真正到达提交预留阶段时，先递归将父／祖先请求预留为 `submitting`，再预留子请求并提交，各自记账。检查拒绝或命中已有成功记录时跳过新增父预留，父准备完成后更新持久化基线。已有子提交后的父失败、取消或崩溃保留 `unknown`，阻止整请求自动重放。
+- 修复录屏启动与停止的预算和清理边界，停止超时或等待中断时保留仍在运行的会话，支持后续查询与恢复收尾。录屏会话可与业务操作并行。
+
+### 外部使用方升级要点
+
+- 使用 `ctx.call` 或新增结果元数据的插件声明 `min_pilot_version="0.2.1"`，并将自身包依赖下限设为 `>=0.2.1`。已有 Action API v1 插件继续兼容。独立模板固定测试基线升级为 `0.2.1`，CI 默认标签为 `v0.2.1`，最低兼容版本为 `0.2.0rc1`。
+- 能力发现消费方需接收新增动作 ID，以及 `source`（`internal` / `external`）、`result_schema`、`private_content`、`lock_device` 字段。外部插件应使用自身命名空间，避免占用本版新增内部动作 ID。通过 `.data` 获取结构化结果，日志、指标和账本仅保存脱敏信息。
+- 远程调用逐个校验父子动作白名单与私有内容授权。MCP 短信子调用需同时启用 `--enable-sms`、放行父动作和 `--allow-action sms.read`，导航还需 `--allow-action sms.open`。Bridge 拒绝私有正文插件。文件与录屏插件为 `local_only`，其 `readonly` 表示设备只读，宿主机仍会产生文件和会话。MCP 专用录屏入口由 `--enable-recording` 授权。
+- 子动作或组合请求出现 `unknown` 时，先按子动作原 ID、幂等键与参数只读对账，再核验父动作，人工结案沿用 `ledger resolve` 流程。尚无子提交的普通准备失败仍可按原键重试。`record stop` 超时保留会话，使用 `record status` 查询后再次 `record stop` 收取结果。
+
+### 验收范围
+
+本版复用改造阶段已通过的 219 项定向离线测试（含独立分发安装）、类型检查与 lint 结果。正式发布提交的完整 CI 结果以 Release 工作流为准。本次插件组合、文件／相册导出及录屏恢复流程的真机验收待完成。
 
 ## [0.2.0] - 2026-11-27
 

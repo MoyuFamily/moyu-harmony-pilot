@@ -73,10 +73,12 @@ class PilotTools:
         self.enable_ocr = enable_ocr
         self.enable_sms = enable_sms
         self.enable_recording = enable_recording
-        self.runner = ActionRunner(actions, state_dir=state_dir)
+        self.runner = ActionRunner(
+            actions, state_dir=state_dir, private_actions={"sms.read"} if enable_sms else (),
+        )
         self._sessions: dict[str, InteractionSession] = {}
         for action_id in actions.allowed_actions:
-            actions.get(action_id, remote=True)
+            actions.get(action_id, remote=True, private_actions=self.runner.private_actions)
 
     def _device(self, alias: str) -> HarmonyDevice:
         profile = self.devices.get_by_alias(alias)
@@ -164,7 +166,7 @@ class PilotTools:
     def list_actions(self) -> dict[str, Any]:
         return {
             "actions": [
-                self.actions.describe(action_id)
+                self.actions.describe(action_id, private_actions=self.runner.private_actions)
                 for action_id in sorted(self.actions.allowed_actions)
             ]
         }
@@ -328,7 +330,9 @@ class PilotTools:
         elif recording_info is not None and recording_info.get("saved") is True:
             device.diagnostics.prune()
 
-        payload: dict[str, Any] = {"alias": alias, "action": action_id, **outcome.to_dict()}
+        payload: dict[str, Any] = {
+            "alias": alias, "action": action_id, **outcome.to_dict(include_data=True),
+        }
         if recording_info is not None:
             payload["recording"] = recording_info
         return payload

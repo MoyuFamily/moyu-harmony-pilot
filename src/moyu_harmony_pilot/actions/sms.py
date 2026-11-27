@@ -17,6 +17,7 @@ from moyu_harmony_pilot.actions.models import (
     ActionBudgetExceeded,
     ActionContext,
     ActionOutcome,
+    ActionPlugin,
     ActionSpec,
     IdempotentAction,
     Inspection,
@@ -295,6 +296,43 @@ def _result(
     }
 
 
+def _read_sms(
+    ctx: ActionContext, *, limit: int, sender: str | None, wait_seconds: float,
+) -> dict[str, Any]:
+    """Read SMS content after validation and thermal checks under the caller's lock and timer."""
+    device = ctx.device
+    selected_sender = sender.strip() if sender is not None else None
+    tree, page = _observe(ctx)
+    messages = [message for message in page.messages
+                if selected_sender is None or message.sender == selected_sender]
+    if not wait_seconds:
+        return _result(device, tree, page, messages, limit=limit, reason="snapshot")
+    baseline = Counter(message.fingerprint for message in page.messages)
+    identity = (page.kind, page.sender)
+    wait_until = time.monotonic() + wait_seconds
+    while time.monotonic() < wait_until:
+        time.sleep(min(_POLL_INTERVAL, max(0, wait_until - time.monotonic())))
+        tree, page = _observe(ctx)
+        if (page.kind, page.sender) != identity:
+            raise DeviceError(
+                "The SMS view changed during the wait. Start a new observation.",
+                code="sms_view_changed", retryable=True,
+            )
+        current: Counter[str] = Counter()
+        new_messages = []
+        for message in page.messages:
+            fingerprint = message.fingerprint
+            current[fingerprint] += 1
+            if current[fingerprint] > baseline[fingerprint] and (
+                selected_sender is None or message.sender == selected_sender
+            ):
+                new_messages.append(message)
+        baseline |= current
+        if new_messages:
+            return _result(device, tree, page, new_messages, limit=limit, reason="new_message")
+    return _result(device, tree, page, [], limit=limit, reason="timeout")
+
+
 def read_sms(
     device: HarmonyDevice, *, limit: int = 10, sender: str | None = None,
     wait_seconds: float = 0, timeout: float = 30.0,
@@ -308,39 +346,10 @@ def read_sms(
     validate_sms_options(limit=limit, sender=sender, wait_seconds=wait_seconds, timeout=timeout)
     ensure_deadline_available()
     ctx = ActionContext(device, time.monotonic() + timeout, max_steps=1000)
-    selected_sender = sender.strip() if sender is not None else None
 
     def collect() -> dict[str, Any]:
         device.assert_thermal_safe(timeout=ctx.remaining_timeout)
-        tree, page = _observe(ctx)
-        messages = [message for message in page.messages
-                    if selected_sender is None or message.sender == selected_sender]
-        if not wait_seconds:
-            return _result(device, tree, page, messages, limit=limit, reason="snapshot")
-        baseline = Counter(message.fingerprint for message in page.messages)
-        identity = (page.kind, page.sender)
-        wait_until = time.monotonic() + wait_seconds
-        while time.monotonic() < wait_until:
-            time.sleep(min(_POLL_INTERVAL, max(0, wait_until - time.monotonic())))
-            tree, page = _observe(ctx)
-            if (page.kind, page.sender) != identity:
-                raise DeviceError(
-                    "The SMS view changed during the wait. Start a new observation.",
-                    code="sms_view_changed", retryable=True,
-                )
-            current: Counter[str] = Counter()
-            new_messages = []
-            for message in page.messages:
-                fingerprint = message.fingerprint
-                current[fingerprint] += 1
-                if current[fingerprint] > baseline[fingerprint] and (
-                    selected_sender is None or message.sender == selected_sender
-                ):
-                    new_messages.append(message)
-            baseline |= current
-            if new_messages:
-                return _result(device, tree, page, new_messages, limit=limit, reason="new_message")
-        return _result(device, tree, page, [], limit=limit, reason="timeout")
+        return _read_sms(ctx, limit=limit, sender=sender, wait_seconds=wait_seconds)
 
     with device.acquire_lock():
         try:
@@ -350,6 +359,48 @@ def read_sms(
                 "SMS observation exceeded its deadline. Read again with a sufficient timeout.",
                 code="action_budget_exceeded", retryable=True,
             ) from exc
+
+
+class SmsRead(ActionPlugin):
+    """Observe private SMS content using the runner-owned lock and execution budget."""
+
+    spec = ActionSpec(
+        "sms.read", "1.0", "Read private SMS content and verification codes on screen.",
+        side_effect="readonly", timeout_seconds=3600, local_only=False,
+        min_pilot_version="0.2.1.dev0", private_content=True,
+        params_schema={
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "limit": {
+                    "type": "integer", "minimum": 1, "maximum": 50,
+                    "description": "Maximum visible messages to return. Defaults to 10.",
+                },
+                "sender": {
+                    "type": ["string", "null"], "minLength": 1, "maxLength": 128,
+                    "description": "Filter by a nonblank sender after trimming whitespace.",
+                },
+                "wait_seconds": {
+                    "type": "number", "minimum": 0, "maximum": 300,
+                    "description": "Wait for messages newer than the initial observation. "
+                    "Defaults to 0 and must be less than the remaining action timeout.",
+                },
+            },
+        },
+        result_schema=SMS_RESULT_SCHEMA,
+        examples=({}, {"limit": 1, "wait_seconds": 5}),
+    )
+
+    def execute(self, ctx: ActionContext, params: dict[str, Any]) -> ActionOutcome:
+        limit = params.get("limit", 10)
+        sender = params.get("sender")
+        wait_seconds = params.get("wait_seconds", 0)
+        validate_sms_options(
+            limit=limit, sender=sender, wait_seconds=wait_seconds, timeout=ctx.remaining_timeout,
+        )
+        return ActionOutcome(
+            summary="SMS page observed.",
+            data=_read_sms(ctx, limit=limit, sender=sender, wait_seconds=wait_seconds),
+        )
 
 
 class SmsOpen(IdempotentAction):

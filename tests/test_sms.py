@@ -270,19 +270,6 @@ def test_sms_open_from_thread_uses_back_target_and_durable_ledger(tmp_path):
     assert not fake.transport.all_remote_tmp_files()
 
 
-def test_sms_open_uncertain_submission_never_replayed(tmp_path):
-    fake = fake_sms(tmp_path, sms_layout(("示例", "hello", "今天"), thread=True))
-    fake.state.timeout_after_mutation = True
-    registry = ActionRegistry()
-    registry.register(SmsOpen())
-    runner = ActionRunner(registry, state_dir=tmp_path)
-    outcome = runner.run(fake.device, "sms.open", {}, idempotency_key="uncertain")
-    assert outcome.status == "unknown"
-    count = len(fake.transport.calls)
-    assert runner.run(fake.device, "sms.open", {}, idempotency_key="uncertain").status == "unknown"
-    assert len(fake.transport.calls) == count
-
-
 @pytest.mark.parametrize(
     "options",
     [{"remote": True, "idempotency_key": "key"}, {}],

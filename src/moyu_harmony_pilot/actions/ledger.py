@@ -131,6 +131,19 @@ class ActionLedger:
             except sqlite3.IntegrityError as exc:
                 raise DeviceConfigurationError("Action already has a durable reservation.") from exc
 
+    def update_inspection(self, key: LedgerKey, metrics: dict[str, Any]) -> None:
+        """Refresh a composition's baseline after child submissions during prepare."""
+        encoded = json.dumps(json_copy(metrics), allow_nan=False)
+        with closing(self._connect()) as db, db:
+            updated = db.execute(
+                "UPDATE actions SET inspection_metrics=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE device_hash=? AND action_id=? AND key_hash=? "
+                "AND request_hash=? AND status='submitting'",
+                (encoded, *key.identity, key.request_hash),
+            )
+            if updated.rowcount != 1:
+                raise DeviceConfigurationError("Composition reservation is no longer active.")
+
     def finish(self, key: LedgerKey, outcome: ActionOutcome) -> None:
         payload = outcome.to_dict()
         if payload["status"] not in {"succeeded", "already_done", "unknown"}:

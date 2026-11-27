@@ -1,6 +1,6 @@
 # 本地 MCP 适配层使用指南
 
-`moyu-harmony-pilot` 提供可选的轻量 MCP v2 stdio 适配层（`harmony-pilot-mcp`），方便本地 AI 客户端以标准 MCP 工具方式观测和操作纯血鸿蒙真机。适配层本身不包含重复业务逻辑，全部复用了核心的 `actions`、`device`、`ui` 与安全护栏。
+`moyu-harmony-pilot` 提供可选的轻量 MCP v2 stdio 适配层（`harmony-pilot-mcp`），方便本地 AI 客户端以标准 MCP 工具方式观测和操作纯血鸿蒙真机。MCP 工具提供内部插件与外部插件的调用入口，底层复用 `actions`、`device`、`ui` 与安全护栏。
 
 ## 安装与启动
 
@@ -25,25 +25,38 @@ harmony-pilot-mcp --config devices.local.json --allow-action device.health
 | `health` | 只读 | 读取电量、充电状态、电池温度与亮灭屏遥测 |
 | `dump_ui` | 只读 | 返回紧凑语义快照（`@eN` 引用、`layout_hash` 与敏感屏信号） |
 | `screenshot` | 只读 | 在本地私有诊断目录生成截图并返回文件元数据。`som=true` 附带编号标注与对应快照（需安装 `[vision]`）。启动时加 `--inline-images` 后可按次请求内联图片 |
-| `list_actions` | 只读 | 返回当前已授权动作的 Schema 与副作用级别 |
+| `list_actions` | 只读 | 返回已授权插件的 `source`（`internal` / `external`）、参数／指标／直接结果 Schema、`private_content`、`lock_device` 与副作用级别 |
 | `run_action` | 受控 | 执行经 `--allow-action` 显式放行的动作 |
 
 ### 安全约束
 
-- **默认空白名单**：必须通过重复传入 `--allow-action <ACTION_ID>` 显式放行动作；不传时仅能使用只读观测工具，且标记为 `local_only` 的动作会被注册表拒绝。
+- 通用动作入口默认使用空白名单，通过重复传入 `--allow-action <ACTION_ID>` 放行父动作与每个子动作。每次 `ctx.call` 都校验远程授权，`local_only` 动作限本地调用。
 - **仅接受配置别名**：所有设备参数必须匹配私有配置中的别名，不会暴露真实串号；截图文件名由适配层自动生成并保存在受控诊断目录中。
 - **统一返回与共享护栏**：所有工具返回值都包含 `ok`、`data` 与结构化 `error`，失败时同步设置 MCP `isError=true`。插件过程日志会重定向到 `stderr`，不污染 stdio 协议通道。有副作用动作与 CLI / Bridge 共用同一套 `ActionRunner`、设备锁、过温保护与 SQLite 幂等账本。
 - **受控错误信息**：可控的设备/UI/视觉异常保留明确的错误码、提示和可重试标记；包含底层子进程输出的 `hdc` 错误会被裁剪为有界提示，避免泄露无关原文；未预期异常仅返回通用错误；提交后不确定的结果保持 `retryable=false`，需人工核对或只读对账。
 
+插件内的 `ctx.call(...)` 共享设备锁与总预算，失败状态自动向上传递。有副作用子动作限父 `prepare` 或 `submit` 调用并使用稳定幂等键。子动作到达 reserve 阶段时，先递归预留父／祖先请求，再预留子请求并提交，以保护已发生的子提交。子 `unknown` 或后续父失败、取消、崩溃均使父请求保留 `unknown`。先按子动作原 ID、幂等键与参数只读对账，再核验父动作，人工结案沿用 `ledger resolve` 流程。
+
+`ActionOutcome.to_dict()` 默认提供安全回执，显式授权的私有 MCP 入口通过 `to_dict(include_data=True)` 交付 `.data`，其上限为 1 MiB。参数与账本中的单条 JSON 载荷上限为 16 KiB。
+
 ## 系统短信读取
 
-通过 `--enable-sms` 显式增加只读 `sms_read` 工具。参数包括设备别名、发送方、条数上限、等待时长和总超时，结果包含当前可见短信原文及验证码候选。需要打开短信列表时同时传入 `--allow-action sms.open`，通过既有 `run_action` 和幂等键执行导航。
+通过 `--enable-sms` 显式增加内部插件 `sms.read` 的私有入口 `sms_read`。参数包括设备别名、发送方、条数上限、等待时长和总超时，结果包含当前可见短信原文及验证码候选。内部插件 `sms.open` 通过 `run_action` 和幂等键执行导航。
 
 ```bash
-harmony-pilot-mcp --config devices.local.json --enable-sms --allow-action sms.open
+harmony-pilot-mcp --config devices.local.json --enable-sms \
+  --allow-action sms.open --allow-action sms.read
 ```
 
-工具元数据标记 `private_content=true`。原文随 MCP 调用返回，客户端历史也需要按个人敏感数据管理。SSH 接入、等待新短信和结果字段见[系统短信与验证码读取](sms.md)。
+外部父插件通过 `ctx.call("sms.read", ...)` 读取短信时，必须同时满足 `--enable-sms`、`--allow-action sms.read` 和父动作白名单。流程先调用 `sms.open` 时也需授权该动作，例如父动作名为 `team.message_review`。
+
+```bash
+harmony-pilot-mcp --config devices.local.json --enable-sms \
+  --allow-action team.message_review \
+  --allow-action sms.open --allow-action sms.read
+```
+
+`private_content=true` 标记短信私有结果。原文仅留在直接调用结果中，客户端历史也需要按个人敏感数据管理。Pull Bridge 禁止执行私有正文插件，包括父插件内部的子调用。SSH 接入、准备阶段示例和结果字段见[系统短信与验证码读取](sms.md)。
 
 ## 内联截图
 
@@ -119,6 +132,8 @@ harmony-pilot-mcp --config devices.local.json --enable-recording --allow-action 
 ```
 
 开启后会额外注册 `record_start`、`record_status`、`record_stop` 三个工具，并允许在 `run_action` 中传入 `record=true` 或 `record_on_failure=true`。所有生成的 MP4 均受限于本地私有 `diagnostics/` 目录（权限 `0600` 并沿用滚动清理），MCP 仅返回路径与时长/帧率等元数据，不向模型回传视频字节流。
+
+这三个工具对应内部插件 `record.start`、`record.status`、`record.stop` 的受控本地入口，录屏会话可与业务动作并行。录屏插件及 `files.query/export` 均为 `local_only`，`readonly` 表示设备只读，宿主机仍会产生文件和会话。通用远程 `run_action` 与其 `ctx.call` 子调用须满足本地执行限制。专用录屏入口由 `--enable-recording` 独立授权，`record_stop` 中断后保留会话，可通过 `record_status` 查看并再次 `record_stop` 恢复收尾。
 
 ---
 

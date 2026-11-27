@@ -4,6 +4,7 @@ from moyu_harmony_pilot.actions.interaction import InteractionSession
 from moyu_harmony_pilot.actions.ledger import ActionLedger
 from moyu_harmony_pilot.actions.models import (
     ACTION_API_VERSION,
+    ActionCallError,
     ActionContext,
     ActionOutcome,
     ActionPlugin,
@@ -18,6 +19,7 @@ from moyu_harmony_pilot.actions.versioning import is_version_compatible, parse_p
 
 __all__ = [
     "ACTION_API_VERSION",
+    "ActionCallError",
     "ActionContext",
     "ActionLedger",
     "ActionOutcome",
